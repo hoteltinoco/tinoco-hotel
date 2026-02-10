@@ -739,12 +739,12 @@ function MdlRes({ data, rooms, types, curUser, users, onSave, onClose }) {
 
         {/* AUTH SUB-MODAL */}
         {authModal && (
-          <div style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,.5)", display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 8, zIndex: 10 }}>
-            <div style={{ background: "#fff", padding: 24, borderRadius: 8, width: 320, boxShadow: "0 8px 24px rgba(0,0,0,.3)" }} onClick={(e) => e.stopPropagation()}>
+          <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 2000, padding: 16 }}>
+            <div style={{ background: "#fff", padding: 24, borderRadius: 12, width: "100%", maxWidth: 340, boxShadow: "0 8px 24px rgba(0,0,0,.3)" }} onClick={(e) => e.stopPropagation()}>
               <h4 style={{ fontSize: 14, marginBottom: 4, color: "#6B3410" }}>🔐 Validar {authModal.type === "checkout" ? "Checkout" : "Adelanto #" + (authModal.index + 1)}</h4>
               <p style={{ fontSize: 11, color: "#888", marginBottom: 12 }}>Solo usuarios autorizados pueden dar conformidad de pago</p>
-              <div className="fld"><label>Usuario autorizado</label><input value={authU} onChange={(e) => { setAuthU(e.target.value); setAuthErr(""); }} placeholder="usuario" /></div>
-              <div className="fld" style={{ marginTop: 8 }}><label>Contraseña</label><input type="password" value={authP} onChange={(e) => { setAuthP(e.target.value); setAuthErr(""); }} placeholder="contraseña" onKeyDown={(e) => e.key === "Enter" && confirmAuth()} /></div>
+              <div className="fld"><label>Usuario autorizado</label><input value={authU} onChange={(e) => { setAuthU(e.target.value); setAuthErr(""); }} placeholder="usuario" autoComplete="off" /></div>
+              <div className="fld" style={{ marginTop: 8 }}><label>Contraseña</label><input type="password" value={authP} onChange={(e) => { setAuthP(e.target.value); setAuthErr(""); }} placeholder="contraseña" onKeyDown={(e) => e.key === "Enter" && confirmAuth()} autoComplete="off" /></div>
               {authErr && <p style={{ color: "#c0392b", fontSize: 11, marginTop: 6 }}>{authErr}</p>}
               <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
                 <button className="ba bsm" onClick={confirmAuth}>Confirmar</button>
@@ -1318,6 +1318,30 @@ button{font-family:var(--F);cursor:pointer;border:none;transition:all .15s}
 @keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
 @keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}.fi{animation:fadeIn .25s ease-out}
 @media(max-width:900px){.cyg{grid-template-columns:repeat(2,1fr)}.hab-detail{grid-template-columns:1fr}}
-@media(max-width:768px){.hdr{flex-direction:column;padding:12px;gap:8px}.hdr-nav{justify-content:center;flex-wrap:wrap}.cnt{padding:12px}.fg{grid-template-columns:1fr}.sr{flex-wrap:wrap}}
+@media(max-width:768px){
+.hdr{flex-direction:column;padding:10px 12px;gap:6px;position:relative}
+.hdr-l{gap:6px}.hdr-t{font-size:14px}.hdr-s{font-size:9px}
+.hdr-nav{justify-content:center;flex-wrap:wrap;gap:1px;width:100%}
+.nv{padding:5px 8px;font-size:11px;gap:2px}.ni{font-size:11px}
+.hdr-user{margin-left:0;padding-left:0;border-left:none;border-top:1px solid rgba(255,255,255,.15);padding-top:6px;width:100%;justify-content:center}
+.cnt{padding:10px 8px 30px}
+.pt{flex-direction:column;align-items:flex-start;gap:8px}
+.ptr{width:100%;flex-wrap:wrap}
+.sb{width:100%}.sb input{width:100%}
+.fg{grid-template-columns:1fr}
+.sr{flex-wrap:wrap;gap:8px}.sc{min-width:70px;padding:8px 10px}.sn{font-size:18px}
+.stats-date-row{flex-wrap:wrap}
+.tw{font-size:11px}
+.tb th{padding:6px 5px;font-size:9px}.tb td{padding:6px 5px;font-size:11px}
+.mdl{width:95%;max-width:none;padding:16px;max-height:90vh}
+.mdl h3{font-size:15px;margin-bottom:10px}
+.mf{flex-direction:column}.mf button{width:100%;padding:12px}
+.adv-row{flex-wrap:wrap;gap:4px}
+.adv-num{padding-top:0;min-width:20px}
+.fr{gap:3px}.fb{padding:4px 10px;font-size:11px}
+.ba{padding:10px 16px;font-size:14px}
+.lr{flex-direction:column;align-items:flex-start;gap:6px}
+.lnfo{margin-left:0}
+}
 @media(max-width:600px){.cyg{grid-template-columns:1fr}}
 `;
