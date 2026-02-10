@@ -167,7 +167,8 @@ function Fld({ label, type = "text", opts, value, onChange, ro, min }) {
 
 
 /* ═══ DB ↔ APP DATA MAPPING ═══ */
-const dbToRoom = (r) => ({ id: r.id, name: r.name, type: r.type_id, floor: r.floor, photos: r.photos || [], obs: r.observations || [] });
+const parseJ = (v) => { if (!v) return []; if (typeof v === "string") try { return JSON.parse(v); } catch { return []; } return v; };
+const dbToRoom = (r) => ({ id: r.id, name: r.name, type: r.type_id, floor: r.floor, photos: parseJ(r.photos), obs: parseJ(r.observations) });
 const dbToType = (t) => ({ id: t.id, name: t.name, base: Number(t.base_price), high: Number(t.high_price), cap: t.capacity });
 const dbToHol = (h) => ({ id: h.id, name: h.name, s: h.start_date, e: h.end_date, icon: h.icon || "🎉" });
 const dbToUser = (u) => ({ id: u.id, name: u.name, user: u.username, pass: u.password });
@@ -180,7 +181,7 @@ function dbToRes(r) {
     state: r.state || "Reservado", total: Number(r.total) || 0, advance: Number(r.advance) || 0,
     balance: Number(r.balance) || 0, payment: r.payment || "Efectivo", comments: r.comments || "",
     checkoutVerifiedBy: r.checkout_verified_by || "", checkoutVerifiedUser: r.checkout_verified_user || "",
-    advances: r.advances || [] };
+    advances: typeof r.advances === "string" ? JSON.parse(r.advances || "[]") : (r.advances || []) };
 }
 function resToDb(r) {
   return { id: r.id, created_date: r.created, created_by: r.createdBy, last_mod_by: r.lastModBy || "",
