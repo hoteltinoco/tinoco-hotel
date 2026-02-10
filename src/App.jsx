@@ -169,7 +169,7 @@ function Fld({ label, type = "text", opts, value, onChange, ro, min }) {
 /* ═══ DB ↔ APP DATA MAPPING ═══ */
 const parseJ = (v) => { if (!v) return []; if (typeof v === "string") try { return JSON.parse(v); } catch { return []; } return v; };
 const dbToRoom = (r) => ({ id: r.id, name: r.name, type: r.type_id, floor: r.floor, photos: parseJ(r.photos), obs: parseJ(r.observations) });
-const dbToType = (t) => ({ id: t.id, name: t.name, base: Number(t.base_price), high: Number(t.high_price), cap: t.capacity });
+const dbToType = (t) => ({ id: t.id, name: t.name, base: Number(t.base_price), high: Number(t.high_price), cap: t.capacity, bedsSmall: t.beds_small || 0, bedsBig: t.beds_big || 0 });
 const dbToHol = (h) => ({ id: h.id, name: h.name, s: h.start_date, e: h.end_date, icon: h.icon || "🎉" });
 const dbToUser = (u) => ({ id: u.id, name: u.name, user: u.username, pass: u.password });
 function dbToRes(r) {
@@ -356,11 +356,11 @@ export default function App() {
   };
   const addType = async (data) => {
     setTypes((p) => [...p, data]);
-    await sbRest("room_types", "POST", [{ id: data.id, name: data.name, base_price: data.base, high_price: data.high, capacity: data.cap }]);
+    await sbRest("room_types", "POST", [{ id: data.id, name: data.name, base_price: data.base, high_price: data.high, capacity: data.cap, beds_small: data.bedsSmall || 0, beds_big: data.bedsBig || 0 }]);
   };
   const updateType = async (id, data) => {
     setTypes((p) => p.map((t) => t.id === id ? { ...t, ...data } : t));
-    await sbRest("room_types", "PATCH", { name: data.name, base_price: data.base, high_price: data.high, capacity: data.cap }, "id=eq." + id);
+    await sbRest("room_types", "PATCH", { name: data.name, base_price: data.base, high_price: data.high, capacity: data.cap, beds_small: data.bedsSmall || 0, beds_big: data.bedsBig || 0 }, "id=eq." + id);
   };
   const addHoliday = async (data) => {
     setHols((p) => [...p, data]);
@@ -590,7 +590,8 @@ function PgReg({ res, deleteReservation, rooms, types, setModal, curUser }) {
 
 /* ═══ ADD TYPE MODAL ═══ */
 function MdlAddType({ onSave, onClose }) {
-  const [f, sF] = useState({ name: "", base: 100, high: 150, cap: 2 });
+  const [f, sF] = useState({ name: "", base: 100, high: 150, bedsSmall: 0, bedsBig: 1 });
+  const cap = Number(f.bedsSmall || 0) + 2 * Number(f.bedsBig || 0);
   return (
     <div className="mbg" onClick={onClose}>
       <div className="mdl ms" onClick={(e) => e.stopPropagation()}>
@@ -599,11 +600,13 @@ function MdlAddType({ onSave, onClose }) {
           <Fld label="Nombre del tipo" value={f.name} onChange={(v) => sF({ ...f, name: v })} />
           <Fld label="Precio Normal S/" type="number" min={0} value={f.base} onChange={(v) => sF({ ...f, base: v })} />
           <Fld label="Precio Alta S/" type="number" min={0} value={f.high} onChange={(v) => sF({ ...f, high: v })} />
-          <Fld label="Capacidad" type="number" min={1} value={f.cap} onChange={(v) => sF({ ...f, cap: v })} />
+          <Fld label="Camas plaza y media" type="number" min={0} value={f.bedsSmall} onChange={(v) => sF({ ...f, bedsSmall: v })} />
+          <Fld label="Camas 2 plazas" type="number" min={0} value={f.bedsBig} onChange={(v) => sF({ ...f, bedsBig: v })} />
+          <Fld label="Capacidad (auto)" type="number" value={cap} ro />
         </div>
         <div className="mf">
           <button className="bc" onClick={onClose}>Cancelar</button>
-          <button className="ba" onClick={() => { if (!f.name) return alert("Ingresa el nombre del tipo"); onSave({ id: f.name.toLowerCase().replace(/\s+/g, "_") + "_" + Date.now(), name: f.name, base: +f.base, high: +f.high, cap: +f.cap }); }}>Crear Tipo</button>
+          <button className="ba" onClick={() => { if (!f.name) return alert("Ingresa el nombre del tipo"); onSave({ id: f.name.toLowerCase().replace(/\s+/g, "_") + "_" + Date.now(), name: f.name, base: +f.base, high: +f.high, cap: cap, bedsSmall: +f.bedsSmall || 0, bedsBig: +f.bedsBig || 0 }); }}>Crear Tipo</button>
         </div>
       </div>
     </div>
@@ -993,6 +996,7 @@ function PgCal({ hols, addHoliday, updateHoliday, deleteHoliday }) {
 /* ═══ HABITACIONES + TARIFARIO ═══ */
 function PgHab({ rooms, updateRoom, deleteRoom, types, updateType, sel, setSel, setModal }) {
   const [ob, sOb] = useState("");
+  const [lightbox, setLightbox] = useState(null);
   const fr = useRef();
   const s = rooms.find((r) => r.id === sel);
   const tp = s ? types.find((t) => t.id === s.type) : null;
@@ -1022,7 +1026,7 @@ function PgHab({ rooms, updateRoom, deleteRoom, types, updateType, sel, setSel, 
               <input type="file" accept="image/*" ref={fr} style={{ display: "none" }} onChange={hP} />
               <div className="phg">
                 {s.photos.map((p2) => (
-                  <div key={p2.id} className="pht"><img src={p2.url} alt="" /><button className="phr" onClick={() => { const rm = rooms.find((r) => r.id === sel); updateRoom(sel, { ...rm, photos: rm.photos.filter((x) => x.id !== p2.id) }); }}>×</button></div>
+                  <div key={p2.id} className="pht"><img src={p2.url} alt="" style={{ cursor: "pointer" }} onClick={() => setLightbox(p2.url)} /><button className="phr" onClick={() => { const rm = rooms.find((r) => r.id === sel); updateRoom(sel, { ...rm, photos: rm.photos.filter((x) => x.id !== p2.id) }); }}>×</button></div>
                 ))}
                 <div className="pha" onClick={() => fr.current?.click()}>📷 Subir foto</div>
               </div>
@@ -1047,10 +1051,12 @@ function PgHab({ rooms, updateRoom, deleteRoom, types, updateType, sel, setSel, 
                     <Fld label="Nombre" value={tarFm.name} onChange={(v) => sTarFm({ ...tarFm, name: v })} />
                     <Fld label="Normal S/" type="number" value={tarFm.base} onChange={(v) => sTarFm({ ...tarFm, base: v })} />
                     <Fld label="Alta S/" type="number" value={tarFm.high} onChange={(v) => sTarFm({ ...tarFm, high: v })} />
-                    <Fld label="Capacidad" type="number" value={tarFm.cap} onChange={(v) => sTarFm({ ...tarFm, cap: v })} />
+                    <Fld label="Camas plaza y media" type="number" min={0} value={tarFm.bedsSmall || 0} onChange={(v) => sTarFm({ ...tarFm, bedsSmall: v })} />
+                    <Fld label="Camas 2 plazas" type="number" min={0} value={tarFm.bedsBig || 0} onChange={(v) => sTarFm({ ...tarFm, bedsBig: v })} />
+                    <Fld label="Capacidad (auto)" type="number" value={Number(tarFm.bedsSmall || 0) + 2 * Number(tarFm.bedsBig || 0)} ro />
                   </div>
                   <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-                    <button className="ba bsm" onClick={() => { updateType(tp.id, { ...tp, name: tarFm.name, base: +tarFm.base, high: +tarFm.high, cap: +tarFm.cap }); sEdTar(false); }}>Guardar</button>
+                    <button className="ba bsm" onClick={() => { const calcCap = Number(tarFm.bedsSmall || 0) + 2 * Number(tarFm.bedsBig || 0); updateType(tp.id, { ...tp, name: tarFm.name, base: +tarFm.base, high: +tarFm.high, cap: calcCap, bedsSmall: +tarFm.bedsSmall || 0, bedsBig: +tarFm.bedsBig || 0 }); sEdTar(false); }}>Guardar</button>
                     <button className="bc bsm" onClick={() => sEdTar(false)}>Cancelar</button>
                   </div>
                 </div>
@@ -1060,7 +1066,13 @@ function PgHab({ rooms, updateRoom, deleteRoom, types, updateType, sel, setSel, 
                     <div className="tp-n"><div className="tp-l">Normal</div><div className="tp-v">S/{tp?.base}</div><div className="tp-s">por noche</div></div>
                     <div className="tp-h"><div className="tp-l">Alta demanda</div><div className="tp-v">S/{tp?.high}</div><div className="tp-s">por noche</div></div>
                   </div>
-                  <p style={{ fontSize: 12, color: "#888", marginTop: 8 }}>Capacidad: {tp?.cap} persona{tp?.cap > 1 ? "s" : ""}</p>
+                  <p style={{ fontSize: 12, color: "#888", marginTop: 8 }}>
+                    {tp?.bedsSmall > 0 && <span>🛏️ {tp.bedsSmall} plaza y media</span>}
+                    {tp?.bedsSmall > 0 && tp?.bedsBig > 0 && <span> · </span>}
+                    {tp?.bedsBig > 0 && <span>🛏️ {tp.bedsBig} de 2 plazas</span>}
+                    {(tp?.bedsSmall > 0 || tp?.bedsBig > 0) && <span> · </span>}
+                    Capacidad: {tp?.cap} persona{tp?.cap > 1 ? "s" : ""}
+                  </p>
                   <button className="btn-et" onClick={() => { sEdTar(true); sTarFm({ ...tp }); }}>✏️ Editar tarifa</button>
                 </div>
               )}
@@ -1070,6 +1082,14 @@ function PgHab({ rooms, updateRoom, deleteRoom, types, updateType, sel, setSel, 
               <p style={{ fontSize: 13 }}>Hab. <strong>{s.name}</strong> — Piso {s.floor} — {tp?.name}</p>
               <button className="bd bsm" style={{ marginTop: 12 }} onClick={() => { if (confirm("¿Eliminar habitación " + s.name + "?")) { deleteRoom(sel); setSel(null); } }}>🗑️ Eliminar</button>
             </div>
+          </div>
+        </div>
+      )}
+      {lightbox && (
+        <div className="mbg" onClick={() => setLightbox(null)} style={{ zIndex: 2000 }}>
+          <div style={{ width: "75%", height: "75%", display: "flex", alignItems: "center", justifyContent: "center", position: "relative" }} onClick={(e) => e.stopPropagation()}>
+            <img src={lightbox} alt="" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", borderRadius: 8, boxShadow: "0 8px 40px rgba(0,0,0,.5)" }} />
+            <button onClick={() => setLightbox(null)} style={{ position: "absolute", top: -12, right: -12, background: "rgba(0,0,0,.7)", color: "#fff", border: "none", width: 36, height: 36, borderRadius: "50%", fontSize: 20, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>×</button>
           </div>
         </div>
       )}
