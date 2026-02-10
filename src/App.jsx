@@ -113,18 +113,32 @@ function roomSt(rid, ds, reservations) {
 
     // Checkout day: occupied/reserved in AM until checkout hour, free after
     if (co === ds) {
-      if (coHour > 12) { am = st; pm = st; ar = r; pr = r; }
-      else { am = st; ar = r; }
+      if (coHour > 12) {
+        if (am === "free") { am = st; ar = r; }
+        if (pm === "free") { pm = st; pr = r; }
+      } else {
+        if (am === "free") { am = st; ar = r; }
+      }
     }
     // Checkin day: free in AM, occupied/reserved from checkin hour
     if (ci === ds && co !== ds) {
-      if (ciHour <= 12) { am = st; pm = st; ar = r; pr = r; }
-      else { pm = st; pr = r; }
+      if (ciHour <= 12) {
+        if (am === "free") { am = st; ar = r; }
+        if (pm === "free") { pm = st; pr = r; }
+      } else {
+        if (pm === "free") { pm = st; pr = r; }
+      }
     }
     // Same day checkin+checkout
-    if (ci === ds && co === ds) { am = st; pm = st; ar = r; pr = r; }
+    if (ci === ds && co === ds) {
+      if (am === "free") { am = st; ar = r; }
+      if (pm === "free") { pm = st; pr = r; }
+    }
     // Full days in between
-    if (ci < ds && co > ds) { am = st; pm = st; ar = r; pr = r; }
+    if (ci < ds && co > ds) {
+      if (am === "free") { am = st; ar = r; }
+      if (pm === "free") { pm = st; pr = r; }
+    }
   }
   return { am, pm, ar, pr };
 }
@@ -866,7 +880,7 @@ function PgDisp({ rooms, types, res, hols, calD, setCalD }) {
                   <td className="avt">{tp?.name}</td>
                   {days.map((d) => {
                     const { am, pm, ar, pr } = roomSt(rm.id, d, res);
-                    const spl = am !== pm;
+                    const spl = am !== pm || (ar && pr && ar.id !== pr.id);
                     const mE = (e) => {
                       const rc = e.currentTarget.getBoundingClientRect();
                       let tx = "Hab. " + rm.name + " — " + d;
@@ -1496,3 +1510,4 @@ button{font-family:var(--F);cursor:pointer;border:none;transition:all .15s}
 }
 @media(max-width:600px){.cyg{grid-template-columns:1fr}}
 `;
+
