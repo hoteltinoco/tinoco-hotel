@@ -492,31 +492,26 @@ function PgReg({ res, deleteReservation, rooms, types, setModal, curUser }) {
         ))}
       </div>
 
-      <div className="tw">
+      {/* DESKTOP TABLE */}
+      <div className="tw desk-only">
         <table className="tb">
           <thead><tr>
-            <th>ID</th><th>Fecha Reg.</th><th>Por</th><th>Mod.</th><th>Huésped</th><th>DNI</th><th>Tel.</th><th>Canal</th><th>Tipo</th><th>Hab.</th><th>Pers.</th><th>Check-in</th><th>Check-out</th><th>Estado</th><th>Total</th><th>Adelantos</th><th>Saldo</th><th>Pago</th><th>Conformidad</th><th>Comentarios</th><th></th>
+            <th>ID</th><th>Huésped</th><th>DNI</th><th>Canal</th><th>Hab.</th><th>Check-in</th><th>Check-out</th><th>Estado</th><th>Total</th><th>Adelantos</th><th>Saldo</th><th>Pago</th><th>Conformidad</th><th></th>
           </tr></thead>
           <tbody>
-            {fl.length === 0 && <tr><td colSpan={21} className="empty">No hay reservas</td></tr>}
+            {fl.length === 0 && <tr><td colSpan={14} className="empty">No hay reservas</td></tr>}
             {fl.map((r) => (
               <tr key={r.id}>
                 <td className="tid">{r.id}</td>
-                <td>{fmtD(r.created)}</td>
-                <td style={{ fontSize: 11, color: "#888" }}>{r.createdBy || "—"}</td>
-                <td style={{ fontSize: 11, color: "#888" }}>{r.lastModBy && r.lastModBy !== r.createdBy ? r.lastModBy : "—"}</td>
                 <td className="tgst">{r.guest}</td>
                 <td>{r.doc}</td>
-                <td>{r.phone}</td>
                 <td>{r.channel}</td>
-                <td>{types.find((t) => t.id === r.roomType)?.name}</td>
                 <td className="trm">{r.roomId}</td>
-                <td style={{ textAlign: "center" }}>{r.persons}</td>
                 <td>{fmtDT(r.checkin)}</td>
                 <td>{fmtDT(r.checkout)}</td>
                 <td><span className={"badge b-" + r.state.toLowerCase()}>{r.state}</span></td>
                 <td className="tmny">S/ {r.total}</td>
-                <td className="tmny">S/ {(r.advances || []).reduce((s2, a) => s2 + a.amount, 0) || r.advance || 0}</td>
+                <td className="tmny">S/ {(r.advances || []).reduce((s2, a) => s2 + (Number(a.amount)||0), 0) || r.advance || 0}</td>
                 <td className={"tmny " + (r.balance > 0 ? "debt" : "paid")}>S/ {r.balance}</td>
                 <td>{r.payment}</td>
                 <td style={{ fontSize: 11 }}>
@@ -530,7 +525,6 @@ function PgReg({ res, deleteReservation, rooms, types, setModal, curUser }) {
                     return <span style={{ color: "#999" }}>—</span>;
                   })()}
                 </td>
-                <td style={{ fontSize: 11, color: "#666", maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis" }} title={r.comments}>{r.comments || "—"}</td>
                 <td className="tact">
                   <button className="ab" onClick={() => setModal({ t: "res", d: r })}>✏️</button>
                   <button className="ab" onClick={() => { if (confirm("¿Eliminar " + r.id + "?")) deleteReservation(r.id); }}>🗑️</button>
@@ -539,6 +533,56 @@ function PgReg({ res, deleteReservation, rooms, types, setModal, curUser }) {
             ))}
           </tbody>
         </table>
+      </div>
+
+      {/* MOBILE CARDS */}
+      <div className="mob-only">
+        {fl.length === 0 && <div className="crd" style={{ textAlign: "center", color: "#999", padding: 24 }}>No hay reservas</div>}
+        {fl.map((r) => {
+          const totalAdv = (r.advances || []).reduce((s2, a) => s2 + (Number(a.amount)||0), 0) || r.advance || 0;
+          return (
+            <div key={r.id} className="mob-card">
+              <div className="mob-top">
+                <span className="tid">{r.id}</span>
+                <span className={"badge b-" + r.state.toLowerCase()}>{r.state}</span>
+              </div>
+              <div className="mob-guest">{r.guest}</div>
+              <div className="mob-row">
+                <span>🏨 Hab. <strong>{r.roomId}</strong></span>
+                <span>👥 {r.persons}</span>
+                <span>📞 {r.channel}</span>
+              </div>
+              <div className="mob-row">
+                <span>📥 {fmtDT(r.checkin)}</span>
+              </div>
+              <div className="mob-row">
+                <span>📤 {fmtDT(r.checkout)}</span>
+              </div>
+              <div className="mob-money">
+                <div><span className="mob-lbl">Total</span><span className="mob-val">S/ {r.total}</span></div>
+                <div><span className="mob-lbl">Adelantos</span><span className="mob-val" style={{color:"#27ae60"}}>S/ {totalAdv}</span></div>
+                <div><span className="mob-lbl">Saldo</span><span className="mob-val" style={{color: r.balance > 0 ? "#c0392b" : "#27ae60"}}>S/ {r.balance}</span></div>
+              </div>
+              <div className="mob-row" style={{ fontSize: 11 }}>
+                <span>💳 {r.payment}</span>
+                <span>{(() => {
+                  const pendAdv = (r.advances || []).some((a) => a.amount > 0 && !a.verifiedBy);
+                  const pendCo = r.state === "Finalizado" && !r.checkoutVerifiedBy;
+                  if (pendAdv || pendCo) return <span style={{ color: "#e67e22", fontWeight: 600 }}>⚠️ Por validar</span>;
+                  if (r.state === "Finalizado" && r.checkoutVerifiedBy) return <span style={{ color: "#27ae60" }}>✅ {r.checkoutVerifiedBy}</span>;
+                  const vf = (r.advances || []).filter((a) => a.verifiedBy);
+                  if (vf.length > 0) return <span style={{ color: "#27ae60" }}>✅ Pagos OK</span>;
+                  return <span style={{ color: "#999" }}>—</span>;
+                })()}</span>
+              </div>
+              {r.comments && <div style={{ fontSize: 11, color: "#666", marginTop: 4, fontStyle: "italic" }}>💬 {r.comments}</div>}
+              <div className="mob-actions">
+                <button className="ba bsm" style={{ flex: 1 }} onClick={() => setModal({ t: "res", d: r })}>✏️ Editar</button>
+                <button className="bd bsm" onClick={() => { if (confirm("¿Eliminar " + r.id + "?")) deleteReservation(r.id); }}>🗑️</button>
+              </div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -613,13 +657,17 @@ function MdlRes({ data, rooms, types, curUser, users, onSave, onClose }) {
 
   const startAuth = (type, index) => { setAuthModal({ type, index }); setAuthU(""); setAuthP(""); setAuthErr(""); };
   const confirmAuth = () => {
-    const found = AUTH_USERS.find((x) => x.user === authU && x.pass === authP);
-    if (!found) { setAuthErr("Credenciales incorrectas o usuario no autorizado"); return; }
-    if (authModal.type === "adv") {
+    if (authModal.type === "checkout") {
+      // Checkout: any registered user can validate
+      const found = (users || []).find((x) => x.user === authU && x.pass === authP);
+      if (!found) { setAuthErr("Usuario o contraseña incorrectos"); return; }
+      setCoVerified({ by: found.name, user: found.user });
+    } else {
+      // Advances: only authorized users
+      const found = AUTH_USERS.find((x) => x.user === authU && x.pass === authP);
+      if (!found) { setAuthErr("Credenciales incorrectas o usuario no autorizado"); return; }
       updAdv(authModal.index, "verifiedBy", found.name);
       updAdv(authModal.index, "verifiedUser", found.user);
-    } else if (authModal.type === "checkout") {
-      setCoVerified({ by: found.name, user: found.user });
     }
     setAuthModal(null);
   };
@@ -742,8 +790,8 @@ function MdlRes({ data, rooms, types, curUser, users, onSave, onClose }) {
           <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 2000, padding: 16 }}>
             <div style={{ background: "#fff", padding: 24, borderRadius: 12, width: "100%", maxWidth: 340, boxShadow: "0 8px 24px rgba(0,0,0,.3)" }} onClick={(e) => e.stopPropagation()}>
               <h4 style={{ fontSize: 14, marginBottom: 4, color: "#6B3410" }}>🔐 Validar {authModal.type === "checkout" ? "Checkout" : "Adelanto #" + (authModal.index + 1)}</h4>
-              <p style={{ fontSize: 11, color: "#888", marginBottom: 12 }}>Solo usuarios autorizados pueden dar conformidad de pago</p>
-              <div className="fld"><label>Usuario autorizado</label><input value={authU} onChange={(e) => { setAuthU(e.target.value); setAuthErr(""); }} placeholder="usuario" autoComplete="off" /></div>
+              <p style={{ fontSize: 11, color: "#888", marginBottom: 12 }}>{authModal.type === "checkout" ? "Cualquier usuario del sistema puede validar el checkout" : "Solo usuarios autorizados pueden dar conformidad de pago"}</p>
+              <div className="fld"><label>{authModal.type === "checkout" ? "Usuario" : "Usuario autorizado"}</label><input value={authU} onChange={(e) => { setAuthU(e.target.value); setAuthErr(""); }} placeholder="usuario" autoComplete="off" /></div>
               <div className="fld" style={{ marginTop: 8 }}><label>Contraseña</label><input type="password" value={authP} onChange={(e) => { setAuthP(e.target.value); setAuthErr(""); }} placeholder="contraseña" onKeyDown={(e) => e.key === "Enter" && confirmAuth()} autoComplete="off" /></div>
               {authErr && <p style={{ color: "#c0392b", fontSize: 11, marginTop: 6 }}>{authErr}</p>}
               <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
@@ -1317,8 +1365,20 @@ button{font-family:var(--F);cursor:pointer;border:none;transition:all .15s}
 .adv-num{font-weight:700;color:var(--a);font-size:14px;min-width:24px;padding-top:18px}
 @keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
 @keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}.fi{animation:fadeIn .25s ease-out}
+.mob-only{display:none}
+.mob-card{background:var(--cb);border:1px solid var(--bd);border-radius:var(--R);padding:12px;margin-bottom:10px}
+.mob-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px}
+.mob-guest{font-size:16px;font-weight:700;color:var(--tx);margin-bottom:6px}
+.mob-row{display:flex;gap:10px;flex-wrap:wrap;font-size:12px;color:var(--ts);margin-bottom:3px}
+.mob-money{display:flex;gap:8px;margin:8px 0;padding:8px;background:#f9f7f4;border-radius:6px}
+.mob-money>div{flex:1;text-align:center}
+.mob-lbl{display:block;font-size:9px;text-transform:uppercase;color:var(--mu);letter-spacing:.3px}
+.mob-val{display:block;font-size:14px;font-weight:700}
+.mob-actions{display:flex;gap:6px;margin-top:8px;padding-top:8px;border-top:1px solid var(--bd)}
 @media(max-width:900px){.cyg{grid-template-columns:repeat(2,1fr)}.hab-detail{grid-template-columns:1fr}}
 @media(max-width:768px){
+.desk-only{display:none}
+.mob-only{display:block}
 .hdr{flex-direction:column;padding:10px 12px;gap:6px;position:relative}
 .hdr-l{gap:6px}.hdr-t{font-size:14px}.hdr-s{font-size:9px}
 .hdr-nav{justify-content:center;flex-wrap:wrap;gap:1px;width:100%}
