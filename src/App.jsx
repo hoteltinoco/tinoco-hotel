@@ -400,12 +400,32 @@ export default function App() {
     await sbRest("cleaning_overrides", "POST", [{ override_key: key, room_id: roomId, status: "limpio", done_by: by, done_at: new Date().toISOString(), registered_by: userName }], "", "return=representation,resolution=merge-duplicates");
   };
 
+  /* ═══ DETECT CONFLICTS ═══ */
+  const conflicts = useMemo(() => {
+    const result = [];
+    const active = res.filter((r) => r.state !== "Cancelado" && r.state !== "Finalizado");
+    for (let i = 0; i < active.length; i++) {
+      for (let j = i + 1; j < active.length; j++) {
+        const a = active[i], b = active[j];
+        if (a.roomId !== b.roomId) continue;
+        const aCI = toDS(a.checkin), aCO = toDS(a.checkout);
+        const bCI = toDS(b.checkin), bCO = toDS(b.checkout);
+        // Overlap: aCI < bCO && bCI < aCO
+        if (aCI < bCO && bCI < aCO) {
+          result.push({ a, b, room: a.roomId });
+        }
+      }
+    }
+    return result;
+  }, [res]);
+
   const nav = [
     { id: "reg", l: "Registro", i: "📋" },
     { id: "disp", l: "Disponibilidad", i: "📅" },
     { id: "cal", l: "Calendario", i: "🗓️" },
     { id: "hab", l: "Habitaciones", i: "🏨" },
     { id: "lim", l: "Limpieza", i: "🧹" },
+    { id: "avisos", l: conflicts.length > 0 ? `Avisos (${conflicts.length})` : "Avisos", i: "⚠️" },
   ];
 
   if (!configured) return (<><style>{CSS}</style><SetupScreen onSetup={handleSetup} /></>);
@@ -429,7 +449,7 @@ export default function App() {
           <div className="hdr-l"><span className="hdr-ico">🏨</span><div><h1 className="hdr-t">Tinoco Apart Hotel</h1><p className="hdr-s">Sistema de Gestión — En línea</p></div></div>
           <nav className="hdr-nav">
             {nav.map((n2) => (
-              <button key={n2.id} className={"nv" + (pg === n2.id ? " ac" : "")} onClick={() => setPg(n2.id)}>
+              <button key={n2.id} className={"nv" + (pg === n2.id ? " ac" : "") + (n2.id === "avisos" && conflicts.length > 0 && pg !== "avisos" ? " nv-warn" : "")} onClick={() => setPg(n2.id)} style={n2.id === "avisos" && conflicts.length > 0 ? { color: "#ff6b6b" } : {}}>
                 <span className="ni">{n2.i}</span>{n2.l}
               </button>
             ))}
@@ -446,6 +466,7 @@ export default function App() {
           {pg === "cal" && <PgCal hols={hols} addHoliday={addHoliday} updateHoliday={updateHoliday} deleteHoliday={deleteHoliday} />}
           {pg === "hab" && <PgHab rooms={rooms} updateRoom={updateRoom} deleteRoom={deleteRoom} types={types} addType={addType} updateType={updateType} deleteType={deleteType} sel={selR} setSel={setSelR} setModal={setModal} />}
           {pg === "lim" && <PgLim rooms={rooms} types={types} res={res} cln={clnOverrides} markCleaningDone={markCleaningDone} curUser={curUser} />}
+          {pg === "avisos" && <PgAvisos conflicts={conflicts} rooms={rooms} types={types} setModal={setModal} setPg={setPg} />}
         </main>
         {modal?.t === "res" && (
           <MdlRes data={modal.d} rooms={rooms} types={types} curUser={curUser} users={users} onSave={(d) => {
@@ -832,8 +853,17 @@ function PgDisp({ rooms, types, res, hols, calD, setCalD }) {
   const days = useMemo(() => { const r = []; for (let i = -3; i <= 4; i++) r.push(addD(calD, i)); return r; }, [calD]);
   const [dispInput, setDispInput] = useState(() => { const p = calD.split("-"); return p[2] + "/" + p[1] + "/" + p[0]; });
   const [tt, sTt] = useState(null);
+  const [filtRoom, setFiltRoom] = useState("all");
+  const [filtType, setFiltType] = useState("all");
   const sl = (s) => (s === "occ" ? "OCUPADO" : s === "res" ? "RESERVADO" : "LIBRE");
   const sc = (s) => (s === "occ" ? "co" : s === "res" ? "cr" : "cf");
+
+  const filteredRooms = useMemo(() => {
+    let fr = rooms;
+    if (filtType !== "all") fr = fr.filter((r) => r.type === filtType);
+    if (filtRoom !== "all") fr = fr.filter((r) => r.id === filtRoom);
+    return fr;
+  }, [rooms, filtType, filtRoom]);
 
   const applyDate = (val) => {
     setDispInput(val);
@@ -858,6 +888,27 @@ function PgDisp({ rooms, types, res, hols, calD, setCalD }) {
         <span className="li"><span className="ld dr" />Ocupado</span>
         <span className="lnfo">3 días antes y 4 días después de la fecha consultada</span>
       </div>
+      <div style={{ display: "flex", gap: 10, marginBottom: 12, flexWrap: "wrap", alignItems: "center" }}>
+        <div className="fld" style={{ width: 180 }}>
+          <label>Filtrar por tipo</label>
+          <select value={filtType} onChange={(e) => { setFiltType(e.target.value); setFiltRoom("all"); }}>
+            <option value="all">Todos los tipos</option>
+            {types.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+          </select>
+        </div>
+        <div className="fld" style={{ width: 180 }}>
+          <label>Filtrar por habitación</label>
+          <select value={filtRoom} onChange={(e) => setFiltRoom(e.target.value)}>
+            <option value="all">Todas las habitaciones</option>
+            {(filtType !== "all" ? rooms.filter((r) => r.type === filtType) : rooms)
+              .slice().sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
+              .map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+          </select>
+        </div>
+        {(filtType !== "all" || filtRoom !== "all") && (
+          <button className="bc bsm" style={{ marginTop: 16 }} onClick={() => { setFiltType("all"); setFiltRoom("all"); }}>Limpiar filtros</button>
+        )}
+      </div>
       <div className="as">
         <div className="anb apl" onClick={() => navDate(-7)}>‹</div>
         <div className="anb anr" onClick={() => navDate(7)}>›</div>
@@ -872,7 +923,7 @@ function PgDisp({ rooms, types, res, hols, calD, setCalD }) {
             ))}
           </tr></thead>
           <tbody>
-            {rooms.map((rm) => {
+            {filteredRooms.map((rm) => {
               const tp = types.find((t) => t.id === rm.type);
               return (
                 <tr key={rm.id}>
@@ -1097,7 +1148,7 @@ function PgHab({ rooms, updateRoom, deleteRoom, types, addType, updateType, dele
       )}
 
       <div className="rg">
-        {rooms.map((r) => {
+        {rooms.slice().sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true })).map((r) => {
           const t2 = types.find((t) => t.id === r.type);
           return (
             <div key={r.id} className={"rc" + (sel === r.id ? " ac" : "")} onClick={() => { setSel(r.id); sEdTar(false); }}>
@@ -1361,6 +1412,64 @@ function PgLim({ rooms, types, res, cln, markCleaningDone, curUser }) {
   );
 }
 
+/* ═══ AVISOS — Conflict Detection ═══ */
+function PgAvisos({ conflicts, rooms, types, setModal, setPg }) {
+  return (
+    <div className="fi">
+      <div className="pt"><h2 className="ptt">⚠️ Avisos e Interferencias</h2></div>
+      {conflicts.length === 0 ? (
+        <div className="crd" style={{ textAlign: "center", padding: 40 }}>
+          <span style={{ fontSize: 48, display: "block", marginBottom: 12 }}>✅</span>
+          <p style={{ fontSize: 16, fontWeight: 600, color: "#27ae60" }}>No hay interferencias detectadas</p>
+          <p style={{ fontSize: 13, color: "#888", marginTop: 6 }}>Todas las reservas activas tienen fechas compatibles.</p>
+        </div>
+      ) : (
+        <>
+          <div className="sr">
+            <div className="sc" style={{ borderTopColor: "#c0392b" }}>
+              <div className="sn">{conflicts.length}</div>
+              <div className="sl">⚠️ Interferencias</div>
+            </div>
+          </div>
+          <p style={{ fontSize: 13, color: "#888", marginBottom: 16 }}>
+            Se detectaron reservas activas (Reservado/Hospedado) que se superponen en la misma habitación. Corrige las fechas o cambia de habitación.
+          </p>
+          {conflicts.map((c, idx) => {
+            const rm = rooms.find((r) => r.id === c.room);
+            const tp = rm ? types.find((t) => t.id === rm.type) : null;
+            return (
+              <div key={idx} className="crd" style={{ borderLeft: "4px solid #c0392b", marginBottom: 12 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                  <span style={{ fontSize: 14, fontWeight: 700, color: "#c0392b" }}>⚠️ Interferencia en Hab. {c.room} {tp ? "(" + tp.name + ")" : ""}</span>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                  {[c.a, c.b].map((r, ri) => (
+                    <div key={ri} style={{ background: "#fef3e2", padding: 10, borderRadius: 8, border: "1px solid #ffe0b2" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                        <span className="tid">{r.id}</span>
+                        <span className={"badge b-" + r.state.toLowerCase()} style={{ fontSize: 10 }}>{r.state}</span>
+                      </div>
+                      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>{r.guest}</div>
+                      <div style={{ fontSize: 12, color: "#555" }}>
+                        <div>📥 Check-in: {fmtDT(r.checkin)}</div>
+                        <div>📤 Check-out: {fmtDT(r.checkout)}</div>
+                      </div>
+                      <div style={{ fontSize: 11, color: "#888", marginTop: 4 }}>
+                        Registrado: {r.created} por {r.createdBy}
+                      </div>
+                      <button className="bc bsm" style={{ marginTop: 8, width: "100%" }} onClick={() => setModal({ t: "res", d: r })}>✏️ Editar reserva</button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </>
+      )}
+    </div>
+  );
+}
+
 /* ═══ CSS ═══ */
 const CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Libre+Baskerville:wght@400;700&family=Source+Sans+3:wght@300;400;500;600;700&display=swap');
@@ -1470,6 +1579,8 @@ button{font-family:var(--F);cursor:pointer;border:none;transition:all .15s}
 .adv-num{font-weight:700;color:var(--a);font-size:14px;min-width:24px;padding-top:18px}
 @keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
 @keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}.fi{animation:fadeIn .25s ease-out}
+@keyframes pulse-warn{0%,100%{opacity:1}50%{opacity:.5}}
+.nv-warn{animation:pulse-warn 1.5s ease-in-out infinite}
 .mob-only{display:none}
 .mob-card{background:var(--cb);border:1px solid var(--bd);border-radius:var(--R);padding:12px;margin-bottom:10px}
 .mob-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px}
@@ -1510,4 +1621,5 @@ button{font-family:var(--F);cursor:pointer;border:none;transition:all .15s}
 }
 @media(max-width:600px){.cyg{grid-template-columns:1fr}}
 `;
+
 
