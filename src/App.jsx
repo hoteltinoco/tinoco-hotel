@@ -862,7 +862,7 @@ function PgDisp({ rooms, types, res, hols, calD, setCalD }) {
     let fr = rooms;
     if (filtType !== "all") fr = fr.filter((r) => r.type === filtType);
     if (filtRoom !== "all") fr = fr.filter((r) => r.id === filtRoom);
-    return fr;
+    return fr.slice().sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
   }, [rooms, filtType, filtRoom]);
 
   const applyDate = (val) => {
@@ -1209,13 +1209,19 @@ function PgHab({ rooms, updateRoom, deleteRoom, types, addType, updateType, dele
                     <p>🛏️ Camas plaza y media: <strong>{tp?.beds15 || 0}</strong> · Camas dos plazas: <strong>{tp?.beds2 || 0}</strong></p>
                     <p>Capacidad: <strong>{tp?.cap}</strong> persona{tp?.cap > 1 ? "s" : ""}</p>
                   </div>
-                  <button className="btn-et" onClick={() => { sEdTar(true); sTarFm({ ...tp }); }}>✏️ Editar tarifa</button>
+                  <button className="btn-et" onClick={() => { sEdTar(true); sTarFm({ ...tp }); }}>✏️ Editar tarifa del tipo (afecta todas las hab. {tp?.name})</button>
                 </div>
               )}
             </div>
             <div className="crd">
               <h4 style={{ fontSize: 15, marginBottom: 10, color: "#6B3410" }}>ℹ️ Información</h4>
               <p style={{ fontSize: 13 }}>Hab. <strong>{s.name}</strong> — Piso {s.floor} — {tp?.name}</p>
+              <div className="fld" style={{ marginTop: 10 }}>
+                <label>Tipo de habitación</label>
+                <select value={s.type} onChange={(e) => { updateRoom(sel, { ...s, type: e.target.value }); }}>
+                  {types.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                </select>
+              </div>
               <button className="bd bsm" style={{ marginTop: 12 }} onClick={() => { if (confirm("¿Eliminar habitación " + s.name + "?")) { deleteRoom(sel); setSel(null); } }}>🗑️ Eliminar</button>
             </div>
           </div>
