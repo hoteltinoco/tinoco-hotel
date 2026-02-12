@@ -1628,4 +1628,3 @@ button{font-family:var(--F);cursor:pointer;border:none;transition:all .15s}
 @media(max-width:600px){.cyg{grid-template-columns:1fr}}
 `;
 
-
