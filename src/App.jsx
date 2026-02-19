@@ -106,8 +106,9 @@ function useIsMobile(bp = 768) { const [m, sM] = useState(window.innerWidth <= b
 
 function LoginPage({ users, onLogin }) {
   const [u, sU] = useState(""); const [p, sP] = useState(""); const [err, sErr] = useState("");
-  const login = () => { const found = users.find((x) => x.user === u && x.pass === p); if (found) { onLogin(found); sErr(""); } else sErr("Usuario o contraseña incorrectos"); };
-  return (<div className="login-bg"><div className="login-card"><div className="login-header"><span style={{ fontSize: 36 }}>🏨</span><h1>Tinoco Apart Hotel</h1><p>Sistema de Gestión</p></div><div className="fld" style={{ marginBottom: 10 }}><label>Usuario</label><input value={u} onChange={(e) => { sU(e.target.value); sErr(""); }} placeholder="usuario" /></div><div className="fld" style={{ marginBottom: 10 }}><label>Contraseña</label><input type="password" value={p} onChange={(e) => { sP(e.target.value); sErr(""); }} placeholder="contraseña" onKeyDown={(e) => e.key === "Enter" && login()} /></div>{err && <p className="login-err">{err}</p>}<button className="ba login-btn" onClick={login}>Ingresar</button><div style={{ textAlign: "center", marginTop: 16 }}><span style={{ fontSize: 10, color: "#27ae60" }}>🟢 Conectado a Supabase</span></div></div></div>);
+  const login = () => { const found = users.find((x) => x.user === u && x.pass === p); if (found) { onLogin(found); sErr(""); } else sErr("Usuario o contraseña incorrectos (" + users.length + " usuarios cargados)"); };
+  const dbOk = users.length > 0;
+  return (<div className="login-bg"><div className="login-card"><div className="login-header"><span style={{ fontSize: 36 }}>🏨</span><h1>Tinoco Apart Hotel</h1><p>Sistema de Gestión</p></div><div className="fld" style={{ marginBottom: 10 }}><label>Usuario</label><input value={u} onChange={(e) => { sU(e.target.value); sErr(""); }} placeholder="usuario" /></div><div className="fld" style={{ marginBottom: 10 }}><label>Contraseña</label><input type="password" value={p} onChange={(e) => { sP(e.target.value); sErr(""); }} placeholder="contraseña" onKeyDown={(e) => e.key === "Enter" && login()} /></div>{err && <p className="login-err">{err}</p>}<button className="ba login-btn" onClick={login}>Ingresar</button><div style={{ textAlign: "center", marginTop: 16 }}>{dbOk ? <span style={{ fontSize: 10, color: "#27ae60" }}>🟢 Conectado a Supabase ({users.length} usuarios)</span> : <span style={{ fontSize: 10, color: "#e67e22" }}>🟡 Esperando conexión a Supabase...</span>}</div></div></div>);
 }
 
 /* Main App */
@@ -834,6 +835,7 @@ button{font-family:var(--F);cursor:pointer;border:none;transition:all .15s}
 }
 @media(max-width:600px){.at{min-width:320px}.ath-d{min-width:48px}}
 `;
+
 
 
 
