@@ -1,19 +1,8 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 
-/* ═══════════════════════════════════════════════════════════════
-   TINOCO APART HOTEL — CONECTADO A SUPABASE
-   
-   PASOS PARA CONECTAR:
-   1. Ve a Supabase → Settings → API
-   2. Copia tu "Project URL" y "anon public" key
-   3. Reemplaza los valores abajo
-   ═══════════════════════════════════════════════════════════════ */
-
-// ⚠️ REEMPLAZA ESTOS 2 VALORES:
 const SUPABASE_URL = "https://mnaslqlkzavcmkipwalv.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_mxifxqVbzIw1LSzSDXUXkA_SZQigrOZ";
 
-/* ═══ MINI SUPABASE REST CLIENT ═══ */
 const sbCfg = { url: SUPABASE_URL, key: SUPABASE_ANON_KEY };
 async function sbRest(table, method, body, filter, prefer) {
   const url = sbCfg.url + "/rest/v1/" + table + (filter ? "?" + filter : "");
@@ -29,271 +18,103 @@ async function sbRest(table, method, body, filter, prefer) {
   } catch (e) { console.error("SB fetch:", e); return null; }
 }
 
-/* ═══ CONSTANTS ═══ */
 const CHANNELS = ["WhatsApp", "Booking", "Airbnb", "Directo", "Teléfono", "Otro"];
 const PAYS = ["Efectivo", "Tarjeta", "Transferencia", "Yape", "Plin"];
 const RSTATES = ["Reservado", "Hospedado", "Finalizado", "Cancelado"];
-
-const toDS = (d) => {
-  const x = new Date(d);
-  return x.getFullYear() + "-" + String(x.getMonth() + 1).padStart(2, "0") + "-" + String(x.getDate()).padStart(2, "0");
-};
-const addD = (ds, n) => {
-  const d = new Date(ds + "T12:00:00");
-  d.setDate(d.getDate() + n);
-  return toDS(d);
-};
+const toDS = (d) => { const x = new Date(d); return x.getFullYear() + "-" + String(x.getMonth() + 1).padStart(2, "0") + "-" + String(x.getDate()).padStart(2, "0"); };
+const addD = (ds, n) => { const d = new Date(ds + "T12:00:00"); d.setDate(d.getDate() + n); return toDS(d); };
 const genId = () => "R-" + String(Math.floor(Math.random() * 900) + 100).padStart(3, "0");
 const dwk = (ds) => new Date(ds + "T12:00:00").toLocaleDateString("es-PE", { weekday: "short" });
 const dnum = (ds) => new Date(ds + "T12:00:00").getDate();
 const msh = (ds) => new Date(ds + "T12:00:00").toLocaleDateString("es-PE", { month: "short" });
 const MN = ["ENERO", "FEBRERO", "MARZO", "ABRIL", "MAYO", "JUNIO", "JULIO", "AGOSTO", "SEPTIEMBRE", "OCTUBRE", "NOVIEMBRE", "DICIEMBRE"];
-const DW = ["Lu", "Ma", "Mi", "Ju", "Vi", "Sá", "Do"];
 const TODAY = toDS(new Date());
 
-/* Format "2026-02-09T18:45" → "09/02/2026, 18:45" */
-function fmtDT(dt) {
-  if (!dt) return "";
-  const parts = dt.split("T");
-  const d = parts[0].split("-");
-  const t = parts.length > 1 ? parts[1].substring(0, 5) : "";
-  if (d.length < 3) return dt;
-  return d[2] + "/" + d[1] + "/" + d[0] + (t ? ", " + t : "");
-}
+function fmtDT(dt) { if (!dt) return ""; const parts = dt.split("T"); const d = parts[0].split("-"); const t = parts.length > 1 ? parts[1].substring(0, 5) : ""; if (d.length < 3) return dt; return d[2] + "/" + d[1] + "/" + d[0] + (t ? ", " + t : ""); }
+function getHour(dt) { if (!dt) return 13; const parts = dt.split("T"); if (parts.length < 2) return 13; return parseInt(parts[1].split(":")[0]) || 13; }
+function getTime(dt) { if (!dt) return "13:00"; const parts = dt.split("T"); if (parts.length < 2) return "13:00"; return parts[1].substring(0, 5) || "13:00"; }
 
-/* Format "2026-02-09" → "09/02/2026" */
-function fmtD(ds) {
-  if (!ds) return "";
-  const d = ds.split("-");
-  if (d.length < 3) return ds;
-  return d[2] + "/" + d[1] + "/" + d[0];
-}
-
-function buildMonth(y, m) {
-  const f = new Date(y, m, 1);
-  let s = f.getDay() - 1;
-  if (s < 0) s = 6;
-  const dim = new Date(y, m + 1, 0).getDate();
-  const cells = [];
-  for (let i = 0; i < s; i++) cells.push(null);
-  for (let d = 1; d <= dim; d++) cells.push(d);
-  while (cells.length % 7 !== 0) cells.push(null);
-  const wks = [];
-  for (let i = 0; i < cells.length; i += 7) wks.push(cells.slice(i, i + 7));
-  return wks;
-}
-
-/* Get hour from datetime string like "2026-02-09T18:00" */
-function getHour(dt) {
-  if (!dt) return 13;
-  const parts = dt.split("T");
-  if (parts.length < 2) return 13;
-  const hm = parts[1].split(":");
-  return parseInt(hm[0]) || 13;
-}
-
-/* Get HH:MM from datetime */
-function getTime(dt) {
-  if (!dt) return "13:00";
-  const parts = dt.split("T");
-  if (parts.length < 2) return "13:00";
-  return parts[1].substring(0, 5) || "13:00";
-}
-
-/* Real-time room status using ACTUAL checkin/checkout hours */
 function roomSt(rid, ds, reservations) {
   let am = "free", pm = "free", ar = null, pr = null;
   for (const r of reservations) {
     if (r.roomId !== rid || r.state === "Cancelado" || r.state === "Finalizado") continue;
-    const ci = toDS(r.checkin);
-    const co = toDS(r.checkout);
-    const ciHour = getHour(r.checkin);
-    const coHour = getHour(r.checkout);
+    const ci = toDS(r.checkin), co = toDS(r.checkout);
+    const ciH = getHour(r.checkin), coH = getHour(r.checkout);
     const st = r.state === "Hospedado" ? "occ" : "res";
-
-    // Checkout day: occupied/reserved in AM until checkout hour, free after
-    if (co === ds) {
-      if (coHour > 12) {
-        if (am === "free") { am = st; ar = r; }
-        if (pm === "free") { pm = st; pr = r; }
-      } else {
-        if (am === "free") { am = st; ar = r; }
-      }
-    }
-    // Checkin day: free in AM, occupied/reserved from checkin hour
-    if (ci === ds && co !== ds) {
-      if (ciHour <= 12) {
-        if (am === "free") { am = st; ar = r; }
-        if (pm === "free") { pm = st; pr = r; }
-      } else {
-        if (pm === "free") { pm = st; pr = r; }
-      }
-    }
-    // Same day checkin+checkout
-    if (ci === ds && co === ds) {
-      if (am === "free") { am = st; ar = r; }
-      if (pm === "free") { pm = st; pr = r; }
-    }
-    // Full days in between
-    if (ci < ds && co > ds) {
-      if (am === "free") { am = st; ar = r; }
-      if (pm === "free") { pm = st; pr = r; }
-    }
+    if (co === ds) { if (coH > 12) { if (am === "free") { am = st; ar = r; } if (pm === "free") { pm = st; pr = r; } } else { if (am === "free") { am = st; ar = r; } } }
+    if (ci === ds && co !== ds) { if (ciH <= 12) { if (am === "free") { am = st; ar = r; } if (pm === "free") { pm = st; pr = r; } } else { if (pm === "free") { pm = st; pr = r; } } }
+    if (ci === ds && co === ds) { if (am === "free") { am = st; ar = r; } if (pm === "free") { pm = st; pr = r; } }
+    if (ci < ds && co > ds) { if (am === "free") { am = st; ar = r; } if (pm === "free") { pm = st; pr = r; } }
   }
   return { am, pm, ar, pr };
 }
 
-/* Count rooms by status for a specific date */
-function countByDate(rooms, reservations, dateStr) {
-  let occ = 0, rsv = 0;
-  const counted = new Set();
+function getFreeRoomsForMonth(rooms, reservations, year, month) {
+  const dim = new Date(year, month + 1, 0).getDate();
+  const freeRooms = [];
   for (const room of rooms) {
-    const { am, pm } = roomSt(room.id, dateStr, reservations);
-    if (am === "occ" || pm === "occ") { occ++; counted.add(room.id); }
-    else if (am === "res" || pm === "res") { rsv++; counted.add(room.id); }
+    let free = true;
+    for (let d = 1; d <= dim; d++) {
+      const ds = year + "-" + String(month + 1).padStart(2, "0") + "-" + String(d).padStart(2, "0");
+      const { am, pm } = roomSt(room.id, ds, reservations);
+      if (am !== "free" || pm !== "free") { free = false; break; }
+    }
+    if (free) freeRooms.push(room);
   }
-  return { occ, rsv, free: rooms.length - occ - rsv };
+  return freeRooms;
 }
 
 const holsOn = (ds, hs) => hs.filter((h) => ds >= h.s && ds <= h.e);
 const isHol = (ds, hs) => holsOn(ds, hs).length > 0;
 
 function Fld({ label, type = "text", opts, value, onChange, ro, min }) {
-  return (
-    <div className="fld">
-      <label>{label}</label>
-      {type === "select" ? (
-        <select value={value} onChange={(e) => onChange(e.target.value)}>
-          {(opts || []).map((o) =>
-            typeof o === "string" ? (
-              <option key={o}>{o}</option>
-            ) : (
-              <option key={o.v} value={o.v}>{o.l}</option>
-            )
-          )}
-        </select>
-      ) : (
-        <input type={type} min={min} value={value || ""} readOnly={ro} style={ro ? { opacity: 0.6 } : {}} onChange={(e) => onChange(e.target.value)} />
-      )}
-    </div>
-  );
+  return (<div className="fld"><label>{label}</label>
+    {type === "select" ? (<select value={value} onChange={(e) => onChange(e.target.value)}>{(opts || []).map((o) => typeof o === "string" ? (<option key={o}>{o}</option>) : (<option key={o.v} value={o.v}>{o.l}</option>))}</select>) : (<input type={type} min={min} value={value || ""} readOnly={ro} style={ro ? { opacity: 0.6 } : {}} onChange={(e) => onChange(e.target.value)} />)}
+  </div>);
 }
 
-
-/* ═══ DB ↔ APP DATA MAPPING ═══ */
 const parseJ = (v) => { if (!v) return []; if (typeof v === "string") try { return JSON.parse(v); } catch { return []; } return v; };
 const dbToRoom = (r) => ({ id: r.id, name: r.name, type: r.type_id, floor: r.floor, photos: parseJ(r.photos), obs: parseJ(r.observations) });
 const dbToType = (t) => ({ id: t.id, name: t.name, base: Number(t.base_price), high: Number(t.high_price), beds15: Number(t.beds_plaza_media) || 0, beds2: Number(t.beds_dos_plazas) || 0, cap: (Number(t.beds_plaza_media) || 0) + 2 * (Number(t.beds_dos_plazas) || 0) });
 const dbToHol = (h) => ({ id: h.id, name: h.name, s: h.start_date, e: h.end_date, icon: h.icon || "🎉" });
 const dbToUser = (u) => ({ id: u.id, name: u.name, user: u.username, pass: u.password });
 function dbToRes(r) {
-  return { id: r.id, created: r.created_date, createdBy: r.created_by, lastModBy: r.last_mod_by || "",
-    guest: r.guest, doc: r.doc, phone: r.phone, email: r.email || "", channel: r.channel || "Directo",
-    roomType: r.room_type, roomId: r.room_id, persons: r.persons || 1,
-    checkin: r.checkin, checkout: r.checkout,
-    ciDate: r.ci_date, ciTime: r.ci_time || "13:00", coDate: r.co_date, coTime: r.co_time || "12:00",
-    state: r.state || "Reservado", total: Number(r.total) || 0, advance: Number(r.advance) || 0,
-    balance: Number(r.balance) || 0, payment: r.payment || "Efectivo", comments: r.comments || "",
-    checkoutVerifiedBy: r.checkout_verified_by || "", checkoutVerifiedUser: r.checkout_verified_user || "",
-    advances: typeof r.advances === "string" ? JSON.parse(r.advances || "[]") : (r.advances || []) };
+  return { id: r.id, created: r.created_date, createdBy: r.created_by, lastModBy: r.last_mod_by || "", guest: r.guest, doc: r.doc, phone: r.phone, email: r.email || "", channel: r.channel || "Directo", roomType: r.room_type, roomId: r.room_id, persons: r.persons || 1, checkin: r.checkin, checkout: r.checkout, ciDate: r.ci_date, ciTime: r.ci_time || "13:00", coDate: r.co_date, coTime: r.co_time || "12:00", state: r.state || "Reservado", total: Number(r.total) || 0, advance: Number(r.advance) || 0, balance: Number(r.balance) || 0, payment: r.payment || "Efectivo", comments: r.comments || "", checkoutVerifiedBy: r.checkout_verified_by || "", checkoutVerifiedUser: r.checkout_verified_user || "", advances: typeof r.advances === "string" ? JSON.parse(r.advances || "[]") : (r.advances || []) };
 }
 function resToDb(r) {
-  return { id: r.id, created_date: r.created, created_by: r.createdBy, last_mod_by: r.lastModBy || "",
-    guest: r.guest, doc: r.doc, phone: r.phone, email: r.email || "", channel: r.channel,
-    room_type: r.roomType, room_id: r.roomId, persons: r.persons || 1,
-    checkin: r.checkin, checkout: r.checkout,
-    ci_date: r.ciDate, ci_time: r.ciTime || "13:00", co_date: r.coDate, co_time: r.coTime || "12:00",
-    state: r.state, total: r.total, advance: r.advance, balance: r.balance,
-    payment: r.payment, comments: r.comments || "",
-    checkout_verified_by: r.checkoutVerifiedBy || "", checkout_verified_user: r.checkoutVerifiedUser || "",
-    advances: JSON.stringify(r.advances || []) };
+  return { id: r.id, created_date: r.created, created_by: r.createdBy, last_mod_by: r.lastModBy || "", guest: r.guest, doc: r.doc, phone: r.phone, email: r.email || "", channel: r.channel, room_type: r.roomType, room_id: r.roomId, persons: r.persons || 1, checkin: r.checkin, checkout: r.checkout, ci_date: r.ciDate, ci_time: r.ciTime || "13:00", co_date: r.coDate, co_time: r.coTime || "12:00", state: r.state, total: r.total, advance: r.advance, balance: r.balance, payment: r.payment, comments: r.comments || "", checkout_verified_by: r.checkoutVerifiedBy || "", checkout_verified_user: r.checkoutVerifiedUser || "", advances: JSON.stringify(r.advances || []) };
 }
 
-/* ═══ LOGIN ═══ */
+/* Session persistence 20min */
+const SESSION_KEY = "tinoco_session";
+const SESSION_TIMEOUT = 20 * 60 * 1000;
+function saveSession(user) { try { localStorage.setItem(SESSION_KEY, JSON.stringify({ user, ts: Date.now() })); } catch {} }
+function loadSession() { try { const raw = localStorage.getItem(SESSION_KEY); if (!raw) return null; const s = JSON.parse(raw); if (Date.now() - s.ts > SESSION_TIMEOUT) { localStorage.removeItem(SESSION_KEY); return null; } return s.user; } catch { return null; } }
+function clearSession() { try { localStorage.removeItem(SESSION_KEY); } catch {} }
+
+/* Notes persistence */
+const NOTES_KEY = "tinoco_notes";
+function loadNotes() { try { const r = localStorage.getItem(NOTES_KEY); return r ? JSON.parse(r) : []; } catch { return []; } }
+function saveNotes(notes) { try { localStorage.setItem(NOTES_KEY, JSON.stringify(notes)); } catch {} }
+
+/* Towels persistence (daily) */
+const TOWEL_KEY = "tinoco_towels";
+function loadTowelData() { try { const r = localStorage.getItem(TOWEL_KEY); if (!r) return null; const d = JSON.parse(r); if (d.date !== TODAY) return null; return d; } catch { return null; } }
+function saveTowelData(data) { try { localStorage.setItem(TOWEL_KEY, JSON.stringify({ ...data, date: TODAY })); } catch {} }
+
+function useIsMobile(bp = 768) { const [m, sM] = useState(window.innerWidth <= bp); useEffect(() => { const h = () => sM(window.innerWidth <= bp); window.addEventListener("resize", h); return () => window.removeEventListener("resize", h); }, [bp]); return m; }
+
 function LoginPage({ users, onLogin }) {
-  const [u, sU] = useState("");
-  const [p, sP] = useState("");
-  const [err, sErr] = useState("");
-  const login = () => {
-    const found = users.find((x) => x.user === u && x.pass === p);
-    if (found) { onLogin(found); sErr(""); } else sErr("Usuario o contraseña incorrectos");
-  };
-  return (
-    <div className="login-bg">
-      <div className="login-card">
-        <div className="login-header">
-          <span style={{ fontSize: 36 }}>🏨</span>
-          <h1>Tinoco Apart Hotel</h1>
-          <p>Sistema de Gestión</p>
-        </div>
-        <div className="fld" style={{ marginBottom: 10 }}>
-          <label>Usuario</label>
-          <input value={u} onChange={(e) => { sU(e.target.value); sErr(""); }} placeholder="usuario" />
-        </div>
-        <div className="fld" style={{ marginBottom: 10 }}>
-          <label>Contraseña</label>
-          <input type="password" value={p} onChange={(e) => { sP(e.target.value); sErr(""); }} placeholder="contraseña" onKeyDown={(e) => e.key === "Enter" && login()} />
-        </div>
-        {err && <p className="login-err">{err}</p>}
-        <button className="ba login-btn" onClick={login}>Ingresar</button>
-        <div style={{ textAlign: "center", marginTop: 16 }}>
-          <span style={{ fontSize: 10, color: "#27ae60" }}>🟢 Conectado a Supabase — datos sincronizados</span>
-        </div>
-      </div>
-    </div>
-  );
+  const [u, sU] = useState(""); const [p, sP] = useState(""); const [err, sErr] = useState("");
+  const login = () => { const found = users.find((x) => x.user === u && x.pass === p); if (found) { onLogin(found); sErr(""); } else sErr("Usuario o contraseña incorrectos"); };
+  return (<div className="login-bg"><div className="login-card"><div className="login-header"><span style={{ fontSize: 36 }}>🏨</span><h1>Tinoco Apart Hotel</h1><p>Sistema de Gestión</p></div><div className="fld" style={{ marginBottom: 10 }}><label>Usuario</label><input value={u} onChange={(e) => { sU(e.target.value); sErr(""); }} placeholder="usuario" /></div><div className="fld" style={{ marginBottom: 10 }}><label>Contraseña</label><input type="password" value={p} onChange={(e) => { sP(e.target.value); sErr(""); }} placeholder="contraseña" onKeyDown={(e) => e.key === "Enter" && login()} /></div>{err && <p className="login-err">{err}</p>}<button className="ba login-btn" onClick={login}>Ingresar</button><div style={{ textAlign: "center", marginTop: 16 }}><span style={{ fontSize: 10, color: "#27ae60" }}>🟢 Conectado a Supabase</span></div></div></div>);
 }
 
-/* ═══ SETUP SCREEN ═══ */
-function SetupScreen({ onSetup }) {
-  const [url, setUrl] = useState("");
-  const [key, setKey] = useState("");
-  const [testing, setTesting] = useState(false);
-  const [err, setErr] = useState("");
-  const test = async () => {
-    if (!url || !key) return setErr("Completa ambos campos");
-    setTesting(true); setErr("");
-    try {
-      const r = await fetch(url + "/rest/v1/users?select=id&limit=1", { headers: { apikey: key, Authorization: "Bearer " + key } });
-      if (!r.ok) throw new Error("No se pudo conectar. Verifica URL y Key.");
-      onSetup(url, key);
-    } catch (e) { setErr(e.message); }
-    setTesting(false);
-  };
-  return (
-    <div className="login-bg">
-      <div className="login-card">
-        <div className="login-header">
-          <span style={{ fontSize: 36 }}>🔌</span>
-          <h1>Conectar a Supabase</h1>
-          <p>Ingresa los datos de tu proyecto</p>
-        </div>
-        <div className="fld" style={{ marginBottom: 10 }}>
-          <label>Project URL</label>
-          <input value={url} onChange={(e) => setUrl(e.target.value.trim())} placeholder="https://xxxxx.supabase.co" />
-        </div>
-        <div className="fld" style={{ marginBottom: 10 }}>
-          <label>Anon Public Key</label>
-          <input value={key} onChange={(e) => setKey(e.target.value.trim())} placeholder="eyJhbGciOiJI..." style={{ fontSize: 10 }} />
-        </div>
-        <p style={{ fontSize: 11, color: "#888", marginBottom: 12 }}>
-          Los encuentras en: Supabase → Settings → API
-        </p>
-        {err && <p className="login-err">{err}</p>}
-        <button className="ba login-btn" onClick={test} disabled={testing}>
-          {testing ? "Conectando..." : "Conectar"}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-/* ═══ MAIN APP — SUPABASE CONNECTED ═══ */
+/* Main App */
 export default function App() {
-  const needSetup = SUPABASE_URL.includes("TU-PROYECTO");
-  const [configured, setConfigured] = useState(!needSetup);
+  const [configured] = useState(true);
   const [loading, setLoading] = useState(true);
-  const [curUser, setCurUser] = useState(null);
+  const [curUser, setCurUser] = useState(() => loadSession());
   const [pg, setPg] = useState("reg");
   const [users, setUsers] = useState([]);
   const [types, setTypes] = useState([]);
@@ -306,1149 +127,495 @@ export default function App() {
   const [selR, setSelR] = useState(null);
   const pollRef = useRef(null);
 
-  const handleSetup = (url, key) => { sbCfg.url = url; sbCfg.key = key; setConfigured(true); };
+  const handleLogin = (user) => { setCurUser(user); saveSession(user); };
+  const handleLogout = () => { setCurUser(null); clearSession(); };
+
+  useEffect(() => { if (!curUser) return; const refresh = () => saveSession(curUser); const evts = ["click","keydown","scroll","touchstart"]; evts.forEach(e => window.addEventListener(e, refresh, {passive:true})); return () => evts.forEach(e => window.removeEventListener(e, refresh)); }, [curUser]);
 
   const loadAll = useCallback(async () => {
     try {
-      const [u, t, r, rv, h, c] = await Promise.all([
-        sbRest("users", "GET", null, "select=*"),
-        sbRest("room_types", "GET", null, "select=*"),
-        sbRest("rooms", "GET", null, "select=*"),
-        sbRest("reservations", "GET", null, "select=*"),
-        sbRest("holidays", "GET", null, "select=*"),
-        sbRest("cleaning_overrides", "GET", null, "select=*"),
-      ]);
-      if (u) setUsers(u.map(dbToUser));
-      if (t) setTypes(t.map(dbToType));
-      if (r) setRooms(r.map(dbToRoom));
-      if (rv) setRes(rv.map(dbToRes));
-      if (h) setHols(h.map(dbToHol));
-      if (c) {
-        const m = {};
-        c.forEach((row) => { m[row.override_key] = { key: row.override_key, roomId: row.room_id, status: row.status, by: row.done_by, at: row.done_at, user: row.registered_by }; });
-        setClnOverrides(m);
-      }
+      const [u, t, r, rv, h, c] = await Promise.all([sbRest("users","GET",null,"select=*"),sbRest("room_types","GET",null,"select=*"),sbRest("rooms","GET",null,"select=*"),sbRest("reservations","GET",null,"select=*"),sbRest("holidays","GET",null,"select=*"),sbRest("cleaning_overrides","GET",null,"select=*")]);
+      if (u) setUsers(u.map(dbToUser)); if (t) setTypes(t.map(dbToType)); if (r) setRooms(r.map(dbToRoom)); if (rv) setRes(rv.map(dbToRes)); if (h) setHols(h.map(dbToHol));
+      if (c) { const m = {}; c.forEach((row) => { m[row.override_key] = { key: row.override_key, roomId: row.room_id, status: row.status, by: row.done_by, at: row.done_at, user: row.registered_by }; }); setClnOverrides(m); }
     } catch (e) { console.error("Load error:", e); }
     setLoading(false);
   }, []);
 
-  useEffect(() => {
-    if (!configured) return;
-    loadAll();
-    // Poll every 8 seconds for real-time sync between devices
-    pollRef.current = setInterval(loadAll, 8000);
-    return () => clearInterval(pollRef.current);
-  }, [configured, loadAll]);
+  useEffect(() => { if (!configured) return; loadAll(); pollRef.current = setInterval(loadAll, 8000); return () => clearInterval(pollRef.current); }, [configured, loadAll]);
 
-  /* ═══ CRUD → SUPABASE ═══ */
-  const addReservation = async (data) => {
-    const nr = { ...data, id: genId(), created: TODAY, createdBy: curUser.name };
-    setRes((p) => [...p, nr]);
-    await sbRest("reservations", "POST", [resToDb(nr)]);
-  };
-  const updateReservation = async (id, data) => {
-    setRes((p) => p.map((r) => r.id === id ? { ...r, ...data } : r));
-    const d = resToDb(data); delete d.id;
-    await sbRest("reservations", "PATCH", d, "id=eq." + id);
-  };
-  const deleteReservation = async (id) => {
-    setRes((p) => p.filter((r) => r.id !== id));
-    await sbRest("reservations", "DELETE", null, "id=eq." + id);
-  };
-  const addRoom = async (data) => {
-    const room = { ...data, photos: [], obs: [] };
-    setRooms((p) => [...p, room]);
-    await sbRest("rooms", "POST", [{ id: room.id, name: room.name, type_id: room.type, floor: room.floor, photos: "[]", observations: "[]" }]);
-  };
-  const updateRoom = async (id, data) => {
-    setRooms((p) => p.map((r) => r.id === id ? data : r));
-    await sbRest("rooms", "PATCH", { name: data.name, type_id: data.type, floor: data.floor, photos: JSON.stringify(data.photos || []), observations: JSON.stringify(data.obs || []) }, "id=eq." + id);
-  };
-  const deleteRoom = async (id) => {
-    setRooms((p) => p.filter((r) => r.id !== id));
-    await sbRest("rooms", "DELETE", null, "id=eq." + id);
-  };
-  const addType = async (data) => {
-    setTypes((p) => [...p, data]);
-    await sbRest("room_types", "POST", [{ id: data.id, name: data.name, base_price: data.base, high_price: data.high, capacity: data.cap, beds_plaza_media: data.beds15, beds_dos_plazas: data.beds2 }]);
-  };
-  const updateType = async (id, data) => {
-    setTypes((p) => p.map((t) => t.id === id ? { ...t, ...data } : t));
-    await sbRest("room_types", "PATCH", { name: data.name, base_price: data.base, high_price: data.high, capacity: data.cap, beds_plaza_media: data.beds15, beds_dos_plazas: data.beds2 }, "id=eq." + id);
-  };
-  const deleteType = async (id) => {
-    const usedByRoom = rooms.some((r) => r.type === id);
-    const usedByRes = res.some((r) => r.roomType === id);
-    if (usedByRoom || usedByRes) return alert("No se puede eliminar: este tipo está asignado a habitaciones o reservas existentes.");
-    setTypes((p) => p.filter((t) => t.id !== id));
-    await sbRest("room_types", "DELETE", null, "id=eq." + id);
-  };
-  const addHoliday = async (data) => {
-    setHols((p) => [...p, data]);
-    await sbRest("holidays", "POST", [{ id: data.id, name: data.name, start_date: data.s, end_date: data.e, icon: data.icon }]);
-  };
-  const updateHoliday = async (id, data) => {
-    setHols((p) => p.map((h) => h.id === id ? { ...h, ...data } : h));
-    await sbRest("holidays", "PATCH", { name: data.name, start_date: data.s, end_date: data.e, icon: data.icon }, "id=eq." + id);
-  };
-  const deleteHoliday = async (id) => {
-    setHols((p) => p.filter((h) => h.id !== id));
-    await sbRest("holidays", "DELETE", null, "id=eq." + id);
-  };
-  const markCleaningDone = async (key, roomId, by, userName) => {
-    setClnOverrides((p) => ({ ...p, [key]: { key, roomId, status: "limpio", by, at: new Date().toISOString(), user: userName } }));
-    await sbRest("cleaning_overrides", "POST", [{ override_key: key, room_id: roomId, status: "limpio", done_by: by, done_at: new Date().toISOString(), registered_by: userName }], "", "return=representation,resolution=merge-duplicates");
-  };
+  const addReservation = async (data) => { const nr = { ...data, id: genId(), created: TODAY, createdBy: curUser.name }; setRes((p) => [...p, nr]); await sbRest("reservations", "POST", [resToDb(nr)]); };
+  const updateReservation = async (id, data) => { setRes((p) => p.map((r) => r.id === id ? { ...r, ...data } : r)); const d = resToDb(data); delete d.id; await sbRest("reservations", "PATCH", d, "id=eq." + id); };
+  const deleteReservation = async (id) => { setRes((p) => p.filter((r) => r.id !== id)); await sbRest("reservations", "DELETE", null, "id=eq." + id); };
+  const addRoom = async (data) => { const room = { ...data, photos: [], obs: [] }; setRooms((p) => [...p, room]); await sbRest("rooms", "POST", [{ id: room.id, name: room.name, type_id: room.type, floor: room.floor, photos: "[]", observations: "[]" }]); };
+  const updateRoom = async (id, data) => { setRooms((p) => p.map((r) => r.id === id ? data : r)); await sbRest("rooms", "PATCH", { name: data.name, type_id: data.type, floor: data.floor, photos: JSON.stringify(data.photos || []), observations: JSON.stringify(data.obs || []) }, "id=eq." + id); };
+  const deleteRoom = async (id) => { setRooms((p) => p.filter((r) => r.id !== id)); await sbRest("rooms", "DELETE", null, "id=eq." + id); };
+  const addType = async (data) => { setTypes((p) => [...p, data]); await sbRest("room_types", "POST", [{ id: data.id, name: data.name, base_price: data.base, high_price: data.high, capacity: data.cap, beds_plaza_media: data.beds15, beds_dos_plazas: data.beds2 }]); };
+  const updateType = async (id, data) => { setTypes((p) => p.map((t) => t.id === id ? { ...t, ...data } : t)); await sbRest("room_types", "PATCH", { name: data.name, base_price: data.base, high_price: data.high, capacity: data.cap, beds_plaza_media: data.beds15, beds_dos_plazas: data.beds2 }, "id=eq." + id); };
+  const deleteType = async (id) => { if (rooms.some((r) => r.type === id) || res.some((r) => r.roomType === id)) return alert("No se puede eliminar: tipo en uso."); setTypes((p) => p.filter((t) => t.id !== id)); await sbRest("room_types", "DELETE", null, "id=eq." + id); };
+  const addHoliday = async (data) => { setHols((p) => [...p, data]); await sbRest("holidays", "POST", [{ id: data.id, name: data.name, start_date: data.s, end_date: data.e, icon: data.icon }]); };
+  const updateHoliday = async (id, data) => { setHols((p) => p.map((h) => h.id === id ? { ...h, ...data } : h)); await sbRest("holidays", "PATCH", { name: data.name, start_date: data.s, end_date: data.e, icon: data.icon }, "id=eq." + id); };
+  const deleteHoliday = async (id) => { setHols((p) => p.filter((h) => h.id !== id)); await sbRest("holidays", "DELETE", null, "id=eq." + id); };
+  const markCleaningDone = async (key, roomId, by, userName) => { setClnOverrides((p) => ({ ...p, [key]: { key, roomId, status: "limpio", by, at: new Date().toISOString(), user: userName } })); await sbRest("cleaning_overrides", "POST", [{ override_key: key, room_id: roomId, status: "limpio", done_by: by, done_at: new Date().toISOString(), registered_by: userName }], "", "return=representation,resolution=merge-duplicates"); };
 
-  /* ═══ DETECT CONFLICTS ═══ */
   const conflicts = useMemo(() => {
-    const result = [];
-    const active = res.filter((r) => r.state !== "Cancelado" && r.state !== "Finalizado");
-    for (let i = 0; i < active.length; i++) {
-      for (let j = i + 1; j < active.length; j++) {
-        const a = active[i], b = active[j];
-        if (a.roomId !== b.roomId) continue;
-        const aCI = toDS(a.checkin), aCO = toDS(a.checkout);
-        const bCI = toDS(b.checkin), bCO = toDS(b.checkout);
-        // Overlap: aCI < bCO && bCI < aCO
-        if (aCI < bCO && bCI < aCO) {
-          result.push({ a, b, room: a.roomId });
-        }
-      }
-    }
+    const result = []; const active = res.filter((r) => r.state !== "Cancelado" && r.state !== "Finalizado");
+    for (let i = 0; i < active.length; i++) { for (let j = i + 1; j < active.length; j++) { const a = active[i], b = active[j]; if (a.roomId !== b.roomId) continue; if (toDS(a.checkin) < toDS(b.checkout) && toDS(b.checkin) < toDS(a.checkout)) result.push({ a, b, room: a.roomId }); } }
     return result;
   }, [res]);
 
   const nav = [
     { id: "reg", l: "Registro", i: "📋" },
     { id: "disp", l: "Disponibilidad", i: "📅" },
-    { id: "cal", l: "Calendario", i: "🗓️" },
     { id: "hab", l: "Habitaciones", i: "🏨" },
     { id: "lim", l: "Limpieza", i: "🧹" },
     { id: "avisos", l: conflicts.length > 0 ? `Avisos (${conflicts.length})` : "Avisos", i: "⚠️" },
   ];
 
-  if (!configured) return (<><style>{CSS}</style><SetupScreen onSetup={handleSetup} /></>);
-  if (loading) return (
-    <><style>{CSS}</style>
-      <div className="login-bg"><div className="login-card" style={{ textAlign: "center" }}>
-        <span style={{ fontSize: 48, display: "block", marginBottom: 16 }}>🏨</span>
-        <h2 style={{ fontFamily: "var(--FD)", fontSize: 18, color: "#6B3410", marginBottom: 8 }}>Tinoco Apart Hotel</h2>
-        <p style={{ fontSize: 13, color: "#888" }}>Cargando datos desde Supabase...</p>
-        <div style={{ marginTop: 20 }}><div style={{ width: 40, height: 40, border: "4px solid #e0dcd6", borderTopColor: "#8B4513", borderRadius: "50%", animation: "spin 1s linear infinite", margin: "0 auto" }} /></div>
-      </div></div>
-    </>
-  );
-  if (!curUser) return (<><style>{CSS}</style><LoginPage users={users} onLogin={setCurUser} /></>);
+  if (loading) return (<><style>{CSS}</style><div className="login-bg"><div className="login-card" style={{ textAlign: "center" }}><span style={{ fontSize: 48, display: "block", marginBottom: 16 }}>🏨</span><h2 style={{ fontFamily: "var(--FD)", fontSize: 18, color: "#6B3410", marginBottom: 8 }}>Tinoco Apart Hotel</h2><p style={{ fontSize: 13, color: "#888" }}>Cargando datos...</p><div style={{ marginTop: 20 }}><div style={{ width: 40, height: 40, border: "4px solid #e0dcd6", borderTopColor: "#8B4513", borderRadius: "50%", animation: "spin 1s linear infinite", margin: "0 auto" }} /></div></div></div></>);
+  if (!curUser) return (<><style>{CSS}</style><LoginPage users={users} onLogin={handleLogin} /></>);
 
   return (
-    <>
-      <style>{CSS}</style>
+    <><style>{CSS}</style>
       <div className="app">
         <header className="hdr">
           <div className="hdr-l"><span className="hdr-ico">🏨</span><div><h1 className="hdr-t">Tinoco Apart Hotel</h1><p className="hdr-s">Sistema de Gestión — En línea</p></div></div>
           <nav className="hdr-nav">
-            {nav.map((n2) => (
-              <button key={n2.id} className={"nv" + (pg === n2.id ? " ac" : "") + (n2.id === "avisos" && conflicts.length > 0 && pg !== "avisos" ? " nv-warn" : "")} onClick={() => setPg(n2.id)} style={n2.id === "avisos" && conflicts.length > 0 ? { color: "#ff6b6b" } : {}}>
-                <span className="ni">{n2.i}</span>{n2.l}
-              </button>
-            ))}
-            <div className="hdr-user">
-              <span className="hdr-uname">👤 {curUser.name}</span>
-              <span style={{ fontSize: 8, color: "#4caf50", marginLeft: 4 }}>●</span>
-              <button className="hdr-logout" onClick={() => setCurUser(null)}>Salir</button>
-            </div>
+            {nav.map((n2) => (<button key={n2.id} className={"nv" + (pg === n2.id ? " ac" : "") + (n2.id === "avisos" && conflicts.length > 0 && pg !== "avisos" ? " nv-warn" : "")} onClick={() => setPg(n2.id)} style={n2.id === "avisos" && conflicts.length > 0 ? { color: "#ff6b6b" } : {}}><span className="ni">{n2.i}</span>{n2.l}</button>))}
+            <div className="hdr-user"><span className="hdr-uname">👤 {curUser.name}</span><span style={{ fontSize: 8, color: "#4caf50", marginLeft: 4 }}>●</span><button className="hdr-logout" onClick={handleLogout}>Salir</button></div>
           </nav>
         </header>
         <main className="cnt">
           {pg === "reg" && <PgReg res={res} deleteReservation={deleteReservation} rooms={rooms} types={types} setModal={setModal} curUser={curUser} />}
           {pg === "disp" && <PgDisp rooms={rooms} types={types} res={res} hols={hols} calD={calD} setCalD={setCalD} />}
-          {pg === "cal" && <PgCal hols={hols} addHoliday={addHoliday} updateHoliday={updateHoliday} deleteHoliday={deleteHoliday} />}
           {pg === "hab" && <PgHab rooms={rooms} updateRoom={updateRoom} deleteRoom={deleteRoom} types={types} addType={addType} updateType={updateType} deleteType={deleteType} sel={selR} setSel={setSelR} setModal={setModal} />}
-          {pg === "lim" && <PgLim rooms={rooms} types={types} res={res} cln={clnOverrides} markCleaningDone={markCleaningDone} curUser={curUser} />}
-          {pg === "avisos" && <PgAvisos conflicts={conflicts} rooms={rooms} types={types} setModal={setModal} setPg={setPg} />}
+          {pg === "lim" && <PgLim rooms={rooms} types={types} res={res} cln={clnOverrides} markCleaningDone={markCleaningDone} curUser={curUser} users={users} />}
+          {pg === "avisos" && <PgAvisos conflicts={conflicts} rooms={rooms} types={types} setModal={setModal} setPg={setPg} curUser={curUser} />}
         </main>
-        {modal?.t === "res" && (
-          <MdlRes data={modal.d} rooms={rooms} types={types} curUser={curUser} users={users} onSave={(d) => {
-            if (modal.d) { updateReservation(modal.d.id, { ...modal.d, ...d }); }
-            else { addReservation(d); }
-            setModal(null);
-          }} onClose={() => setModal(null)} />
-        )}
-        {modal?.t === "addRoom" && (
-          <MdlAddRm types={types} onSave={(d) => { addRoom(d); setModal(null); }} onClose={() => setModal(null)} />
+        {modal?.t === "res" && <MdlRes data={modal.d} rooms={rooms} types={types} curUser={curUser} users={users} onSave={(d) => { if (modal.d) updateReservation(modal.d.id, { ...modal.d, ...d }); else addReservation(d); setModal(null); }} onClose={() => setModal(null)} />}
+        {modal?.t === "addRoom" && <MdlAddRm types={types} onSave={(d) => { addRoom(d); setModal(null); }} onClose={() => setModal(null)} />}
+        {modal?.t === "freeRooms" && (
+          <div className="mbg" onClick={() => setModal(null)}><div className="mdl ms" onClick={(e) => e.stopPropagation()}>
+            <h3>🟢 Hab. Libres — {MN[modal.month]} {modal.year}</h3>
+            {modal.freeRooms.length === 0 ? <p style={{ color: "#999", textAlign: "center", padding: 20 }}>No hay hab. completamente libres este mes</p> : (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(100px,1fr))", gap: 8 }}>
+                {modal.freeRooms.map((rm) => { const tp = types.find((t) => t.id === rm.type); return (<div key={rm.id} style={{ background: "#e8f8ee", border: "1px solid #a5d6a7", borderRadius: 8, padding: 10, textAlign: "center" }}><div style={{ fontFamily: "var(--FD)", fontSize: 20, fontWeight: 700, color: "#2e7d32" }}>{rm.name}</div><div style={{ fontSize: 11, color: "#666" }}>{tp?.name}</div></div>); })}
+              </div>
+            )}
+            <div className="mf"><button className="bc" onClick={() => setModal(null)}>Cerrar</button></div>
+          </div></div>
         )}
       </div>
     </>
   );
 }
 
-/* ═══ REGISTRO — with date-based stats & add type ═══ */
+/* PgReg - month-based, no room counts, free rooms button, todos excludes final/cancel */
 function PgReg({ res, deleteReservation, rooms, types, setModal, curUser }) {
-  const [q, sQ] = useState("");
-  const [sf, sSf] = useState("all");
-  const [statsDate, setStatsDate] = useState(TODAY);
-
-  const dateCounts = useMemo(() => countByDate(rooms, res, statsDate), [rooms, res, statsDate]);
+  const [q, sQ] = useState(""); const [sf, sSf] = useState("all");
+  const now = new Date();
+  const [statsMonth, setStatsMonth] = useState(now.getMonth());
+  const [statsYear, setStatsYear] = useState(now.getFullYear());
+  const freeRoomsMonth = useMemo(() => getFreeRoomsForMonth(rooms, res, statsYear, statsMonth), [rooms, res, statsYear, statsMonth]);
 
   const fl = useMemo(() => res.filter((r) => {
+    if (sf === "all" && (r.state === "Finalizado" || r.state === "Cancelado")) return false;
     if (sf !== "all" && r.state !== sf) return false;
-    if (q) {
-      const s = q.toLowerCase();
-      return r.guest.toLowerCase().includes(s) || r.id.toLowerCase().includes(s) || r.doc.includes(s) || r.roomId.includes(s);
-    }
+    if (q) { const s = q.toLowerCase(); return r.guest.toLowerCase().includes(s) || r.id.toLowerCase().includes(s) || r.doc.includes(s) || r.roomId.includes(s); }
     return true;
   }), [res, q, sf]);
 
+  const prevMonth = () => { if (statsMonth === 0) { setStatsMonth(11); setStatsYear(statsYear - 1); } else setStatsMonth(statsMonth - 1); };
+  const nextMonth = () => { if (statsMonth === 11) { setStatsMonth(0); setStatsYear(statsYear + 1); } else setStatsMonth(statsMonth + 1); };
+
   return (
     <div className="fi">
-      <div className="pt">
-        <h2 className="ptt">Registro de Huéspedes</h2>
-        <div className="ptr">
-          <div className="sb"><span className="si">🔍</span><input placeholder="Buscar..." value={q} onChange={(e) => sQ(e.target.value)} /></div>
-          <button className="ba" onClick={() => setModal({ t: "res", d: null })}>+ Nueva Reserva</button>
-        </div>
-      </div>
-
-      {/* Date-based stats */}
+      <div className="pt"><h2 className="ptt">Registro de Huéspedes</h2><div className="ptr"><div className="sb"><span className="si">🔍</span><input placeholder="Buscar..." value={q} onChange={(e) => sQ(e.target.value)} /></div><button className="ba" onClick={() => setModal({ t: "res", d: null })}>+ Nueva Reserva</button></div></div>
       <div className="stats-date-row">
         <span style={{ fontSize: 13, fontWeight: 600 }}>Estado al:</span>
-        <input type="date" value={statsDate} onChange={(e) => setStatsDate(e.target.value)} style={{ width: 150 }} />
-        {statsDate !== TODAY && <button className="bc bsm" onClick={() => setStatsDate(TODAY)}>Hoy</button>}
+        <button className="bc bsm" onClick={prevMonth}>◀</button>
+        <span style={{ fontSize: 14, fontWeight: 700, color: "var(--ad)", minWidth: 140, textAlign: "center" }}>{MN[statsMonth]} {statsYear}</span>
+        <button className="bc bsm" onClick={nextMonth}>▶</button>
+        {(statsMonth !== now.getMonth() || statsYear !== now.getFullYear()) && <button className="bc bsm" onClick={() => { setStatsMonth(now.getMonth()); setStatsYear(now.getFullYear()); }}>Hoy</button>}
       </div>
-      <div className="sr">
-        <div className="sc"><div className="sn">{rooms.length}</div><div className="sl">Total Hab.</div></div>
-        <div className="sc srd"><div className="sn">{dateCounts.occ}</div><div className="sl">Hospedados</div></div>
-        <div className="sc sor"><div className="sn">{dateCounts.rsv}</div><div className="sl">Reservados</div></div>
-        <div className="sc sgr"><div className="sn">{dateCounts.free}</div><div className="sl">Libres</div></div>
-      </div>
-
+      <button className="ba" style={{ marginBottom: 16, width: "100%" }} onClick={() => setModal({ t: "freeRooms", freeRooms: freeRoomsMonth, month: statsMonth, year: statsYear })}>🟢 Ver Habitaciones Libres en {MN[statsMonth]} ({freeRoomsMonth.length})</button>
       <div className="fr">
-        {["all", ...RSTATES].map((s) => (
-          <button key={s} className={"fb" + (sf === s ? " ac" : "")} onClick={() => sSf(s)}>
-            {s === "all" ? "Todos" : s}
-          </button>
-        ))}
+        {["all", ...RSTATES].map((s) => (<button key={s} className={"fb" + (sf === s ? " ac" : "")} onClick={() => sSf(s)}>{s === "all" ? "Todos" : s}</button>))}
       </div>
-
-      {/* DESKTOP TABLE */}
-      <div className="tw desk-only">
-        <table className="tb">
-          <thead><tr>
-            <th>ID</th><th>Huésped</th><th>DNI</th><th>Canal</th><th>Hab.</th><th>Check-in</th><th>Check-out</th><th>Estado</th><th>Total</th><th>Adelantos</th><th>Saldo</th><th>Pago</th><th>Conformidad</th><th></th>
-          </tr></thead>
-          <tbody>
-            {fl.length === 0 && <tr><td colSpan={14} className="empty">No hay reservas</td></tr>}
-            {fl.map((r) => (
-              <tr key={r.id}>
-                <td className="tid">{r.id}</td>
-                <td className="tgst">{r.guest}</td>
-                <td>{r.doc}</td>
-                <td>{r.channel}</td>
-                <td className="trm">{r.roomId}</td>
-                <td>{fmtDT(r.checkin)}</td>
-                <td>{fmtDT(r.checkout)}</td>
-                <td><span className={"badge b-" + r.state.toLowerCase()}>{r.state}</span></td>
-                <td className="tmny">S/ {r.total}</td>
-                <td className="tmny">S/ {(r.advances || []).reduce((s2, a) => s2 + (Number(a.amount)||0), 0) || r.advance || 0}</td>
-                <td className={"tmny " + (r.balance > 0 ? "debt" : "paid")}>S/ {r.balance}</td>
-                <td>{r.payment}</td>
-                <td style={{ fontSize: 11 }}>
-                  {(() => {
-                    const pendAdv = (r.advances || []).some((a) => a.amount > 0 && !a.verifiedBy);
-                    const pendCo = r.state === "Finalizado" && !r.checkoutVerifiedBy;
-                    if (pendAdv || pendCo) return <span style={{ color: "#e67e22", fontWeight: 600 }}>⚠️ Por validar</span>;
-                    if (r.state === "Finalizado" && r.checkoutVerifiedBy) return <span style={{ color: "#27ae60" }}>✅ {r.checkoutVerifiedBy}</span>;
-                    const verified = (r.advances || []).filter((a) => a.verifiedBy);
-                    if (verified.length > 0) return <span style={{ color: "#27ae60" }}>✅ Pagos OK</span>;
-                    return <span style={{ color: "#999" }}>—</span>;
-                  })()}
-                </td>
-                <td className="tact">
-                  <button className="ab" onClick={() => setModal({ t: "res", d: r })}>✏️</button>
-                  <button className="ab" onClick={() => { if (confirm("¿Eliminar " + r.id + "?")) deleteReservation(r.id); }}>🗑️</button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      {/* MOBILE CARDS */}
+      {/* Desktop */}
+      <div className="tw desk-only"><table className="tb"><thead><tr><th>ID</th><th>Huésped</th><th>DNI</th><th>Canal</th><th>Hab.</th><th>Check-in</th><th>Check-out</th><th>Estado</th><th>Total</th><th>Adelantos</th><th>Saldo</th><th>Pago</th><th>Conformidad</th><th></th></tr></thead><tbody>
+        {fl.length === 0 && <tr><td colSpan={14} className="empty">No hay reservas</td></tr>}
+        {fl.map((r) => (<tr key={r.id}><td className="tid">{r.id}</td><td className="tgst">{r.guest}</td><td>{r.doc}</td><td>{r.channel}</td><td className="trm">{r.roomId}</td><td>{fmtDT(r.checkin)}</td><td>{fmtDT(r.checkout)}</td><td><span className={"badge b-" + r.state.toLowerCase()}>{r.state}</span></td><td className="tmny">S/ {r.total}</td><td className="tmny">S/ {(r.advances || []).reduce((s2, a) => s2 + (Number(a.amount)||0), 0) || r.advance || 0}</td><td className={"tmny " + (r.balance > 0 ? "debt" : "paid")}>S/ {r.balance}</td><td>{r.payment}</td>
+          <td style={{ fontSize: 11 }}>{(() => { const pA = (r.advances || []).some((a) => a.amount > 0 && !a.verifiedBy); const pC = r.state === "Finalizado" && !r.checkoutVerifiedBy; if (pA || pC) return <span style={{ color: "#e67e22", fontWeight: 600 }}>⚠️ Por validar</span>; if (r.state === "Finalizado" && r.checkoutVerifiedBy) return <span style={{ color: "#27ae60" }}>✅ {r.checkoutVerifiedBy}</span>; if ((r.advances || []).some((a) => a.verifiedBy)) return <span style={{ color: "#27ae60" }}>✅ Pagos OK</span>; return <span style={{ color: "#999" }}>—</span>; })()}</td>
+          <td className="tact"><button className="ab" onClick={() => setModal({ t: "res", d: r })}>✏️</button><button className="ab" onClick={() => { if (confirm("¿Eliminar " + r.id + "?")) deleteReservation(r.id); }}>🗑️</button></td>
+        </tr>))}
+      </tbody></table></div>
+      {/* Mobile */}
       <div className="mob-only">
         {fl.length === 0 && <div className="crd" style={{ textAlign: "center", color: "#999", padding: 24 }}>No hay reservas</div>}
-        {fl.map((r) => {
-          const totalAdv = (r.advances || []).reduce((s2, a) => s2 + (Number(a.amount)||0), 0) || r.advance || 0;
-          return (
-            <div key={r.id} className="mob-card">
-              <div className="mob-top">
-                <span className="tid">{r.id}</span>
-                <span className={"badge b-" + r.state.toLowerCase()}>{r.state}</span>
-              </div>
-              <div className="mob-guest">{r.guest}</div>
-              <div className="mob-row">
-                <span>🏨 Hab. <strong>{r.roomId}</strong></span>
-                <span>👥 {r.persons}</span>
-                <span>📞 {r.channel}</span>
-              </div>
-              <div className="mob-row">
-                <span>📥 {fmtDT(r.checkin)}</span>
-              </div>
-              <div className="mob-row">
-                <span>📤 {fmtDT(r.checkout)}</span>
-              </div>
-              <div className="mob-money">
-                <div><span className="mob-lbl">Total</span><span className="mob-val">S/ {r.total}</span></div>
-                <div><span className="mob-lbl">Adelantos</span><span className="mob-val" style={{color:"#27ae60"}}>S/ {totalAdv}</span></div>
-                <div><span className="mob-lbl">Saldo</span><span className="mob-val" style={{color: r.balance > 0 ? "#c0392b" : "#27ae60"}}>S/ {r.balance}</span></div>
-              </div>
-              <div className="mob-row" style={{ fontSize: 11 }}>
-                <span>💳 {r.payment}</span>
-                <span>{(() => {
-                  const pendAdv = (r.advances || []).some((a) => a.amount > 0 && !a.verifiedBy);
-                  const pendCo = r.state === "Finalizado" && !r.checkoutVerifiedBy;
-                  if (pendAdv || pendCo) return <span style={{ color: "#e67e22", fontWeight: 600 }}>⚠️ Por validar</span>;
-                  if (r.state === "Finalizado" && r.checkoutVerifiedBy) return <span style={{ color: "#27ae60" }}>✅ {r.checkoutVerifiedBy}</span>;
-                  const vf = (r.advances || []).filter((a) => a.verifiedBy);
-                  if (vf.length > 0) return <span style={{ color: "#27ae60" }}>✅ Pagos OK</span>;
-                  return <span style={{ color: "#999" }}>—</span>;
-                })()}</span>
-              </div>
-              {r.comments && <div style={{ fontSize: 11, color: "#666", marginTop: 4, fontStyle: "italic" }}>💬 {r.comments}</div>}
-              <div className="mob-actions">
-                <button className="ba bsm" style={{ flex: 1 }} onClick={() => setModal({ t: "res", d: r })}>✏️ Editar</button>
-                <button className="bd bsm" onClick={() => { if (confirm("¿Eliminar " + r.id + "?")) deleteReservation(r.id); }}>🗑️</button>
-              </div>
-            </div>
-          );
-        })}
+        {fl.map((r) => { const tA = (r.advances || []).reduce((s2, a) => s2 + (Number(a.amount)||0), 0) || r.advance || 0; return (
+          <div key={r.id} className="mob-card"><div className="mob-top"><span className="tid">{r.id}</span><span className={"badge b-" + r.state.toLowerCase()}>{r.state}</span></div><div className="mob-guest">{r.guest}</div>
+            <div className="mob-row"><span>🏨 <strong>{r.roomId}</strong></span><span>👥 {r.persons}</span><span>📞 {r.channel}</span></div>
+            <div className="mob-row"><span>📥 {fmtDT(r.checkin)}</span></div><div className="mob-row"><span>📤 {fmtDT(r.checkout)}</span></div>
+            <div className="mob-money"><div><span className="mob-lbl">Total</span><span className="mob-val">S/ {r.total}</span></div><div><span className="mob-lbl">Adelantos</span><span className="mob-val" style={{color:"#27ae60"}}>S/ {tA}</span></div><div><span className="mob-lbl">Saldo</span><span className="mob-val" style={{color: r.balance > 0 ? "#c0392b" : "#27ae60"}}>S/ {r.balance}</span></div></div>
+            {r.comments && <div style={{ fontSize: 11, color: "#666", marginTop: 4, fontStyle: "italic" }}>💬 {r.comments}</div>}
+            <div className="mob-actions"><button className="ba bsm" style={{ flex: 1 }} onClick={() => setModal({ t: "res", d: r })}>✏️ Editar</button><button className="bd bsm" onClick={() => { if (confirm("¿Eliminar " + r.id + "?")) deleteReservation(r.id); }}>🗑️</button></div>
+          </div>); })}
       </div>
     </div>
   );
 }
 
-/* ═══ ADD TYPE MODAL ═══ */
-function MdlAddType({ onSave, onClose }) {
-  const [f, sF] = useState({ name: "", base: 100, high: 150, beds15: 1, beds2: 0 });
-  const cap = f.beds15 + 2 * f.beds2;
-  return (
-    <div className="mbg" onClick={onClose}>
-      <div className="mdl ms" onClick={(e) => e.stopPropagation()}>
-        <h3>Nuevo Tipo de Habitación</h3>
-        <div className="fg">
-          <Fld label="Nombre del tipo" value={f.name} onChange={(v) => sF({ ...f, name: v })} />
-          <Fld label="Precio Normal S/" type="number" min={0} value={f.base} onChange={(v) => sF({ ...f, base: v })} />
-          <Fld label="Precio Alta S/" type="number" min={0} value={f.high} onChange={(v) => sF({ ...f, high: v })} />
-          <Fld label="Camas plaza y media" type="number" min={0} value={f.beds15} onChange={(v) => sF({ ...f, beds15: +v })} />
-          <Fld label="Camas dos plazas" type="number" min={0} value={f.beds2} onChange={(v) => sF({ ...f, beds2: +v })} />
-          <div className="fld"><label>Capacidad (auto)</label><input type="number" value={cap} readOnly style={{ opacity: 0.6, background: "#f0f0f0" }} /></div>
-        </div>
-        <div className="mf">
-          <button className="bc" onClick={onClose}>Cancelar</button>
-          <button className="ba" onClick={() => { if (!f.name) return alert("Ingresa el nombre del tipo"); onSave({ id: f.name.toLowerCase().replace(/\s+/g, "_") + "_" + Date.now(), name: f.name, base: +f.base, high: +f.high, beds15: +f.beds15, beds2: +f.beds2, cap }); }}>Crear Tipo</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ═══ RESERVATION MODAL ═══ */
+/* MdlRes - Reservation modal (unchanged logic) */
 function MdlRes({ data, rooms, types, curUser, users, onSave, onClose }) {
   const AUTH_USERS = (users || []).filter((u) => ["ivanaberrocal", "marianelatinoco", "dafnaberrocal"].includes(u.user));
-  const initAdvances = (d) => {
-    if (d && d.advances && d.advances.length > 0) return d.advances;
-    if (d && d.advance > 0) return [{ amount: d.advance, verifiedBy: "", verifiedUser: "", date: d.created || TODAY }];
-    return [];
-  };
+  const initAdv = (d) => { if (d?.advances?.length > 0) return d.advances; if (d?.advance > 0) return [{ amount: d.advance, verifiedBy: "", verifiedUser: "", date: d.created || TODAY }]; return []; };
   const [f, sF] = useState(() => {
-    const d = data || {
-      guest: "", doc: "", phone: "", email: "", channel: "WhatsApp",
-      roomType: types[0]?.id || "", roomId: rooms[0]?.id || "",
-      persons: 1, ciDate: "", ciTime: "13:00", coDate: "", coTime: "12:00",
-      checkin: "", checkout: "", state: "Reservado",
-      total: 0, advance: 0, balance: 0, payment: "Efectivo", comments: "",
-      checkoutVerifiedBy: "", checkoutVerifiedUser: "", advances: [],
-      lastModBy: ""
-    };
-    if (d.checkin && !d.ciDate) { const p2 = d.checkin.split("T"); d.ciDate = p2[0] || ""; d.ciTime = (p2[1] || "13:00").substring(0, 5); }
-    if (d.checkout && !d.coDate) { const p2 = d.checkout.split("T"); d.coDate = p2[0] || ""; d.coTime = (p2[1] || "12:00").substring(0, 5); }
-    return { ...d, checkoutVerifiedBy: d.checkoutVerifiedBy || "", checkoutVerifiedUser: d.checkoutVerifiedUser || "" };
+    const d = data || { guest:"",doc:"",phone:"",email:"",channel:"WhatsApp",roomType:types[0]?.id||"",roomId:rooms[0]?.id||"",persons:1,ciDate:"",ciTime:"13:00",coDate:"",coTime:"12:00",checkin:"",checkout:"",state:"Reservado",total:0,advance:0,balance:0,payment:"Efectivo",comments:"",checkoutVerifiedBy:"",checkoutVerifiedUser:"",advances:[],lastModBy:"" };
+    if (d.checkin && !d.ciDate) { const p2 = d.checkin.split("T"); d.ciDate = p2[0]||""; d.ciTime = (p2[1]||"13:00").substring(0,5); }
+    if (d.checkout && !d.coDate) { const p2 = d.checkout.split("T"); d.coDate = p2[0]||""; d.coTime = (p2[1]||"12:00").substring(0,5); }
+    return { ...d, checkoutVerifiedBy: d.checkoutVerifiedBy||"", checkoutVerifiedUser: d.checkoutVerifiedUser||"" };
   });
-  const [advs, setAdvs] = useState(() => initAdvances(data));
-  const [coVerified, setCoVerified] = useState({ by: data?.checkoutVerifiedBy || "", user: data?.checkoutVerifiedUser || "" });
-  const [authModal, setAuthModal] = useState(null);
-  const [authU, setAuthU] = useState("");
-  const [authP, setAuthP] = useState("");
-  const [authErr, setAuthErr] = useState("");
-
-  const totalAdv = advs.reduce((acc, a) => acc + (Number(a.amount) || 0), 0);
-  const balance = (Number(f.total) || 0) - totalAdv;
-
-  const s = (k, v) => {
-    const u = { ...f, [k]: v };
-    if (k === "roomType") { const ar = rooms.filter((r) => r.type === v); if (ar.length) u.roomId = ar[0].id; }
-    sF(u);
-  };
-
-  const addAdv = () => {
-    if (advs.length >= 4) return alert("Máximo 4 adelantos");
-    setAdvs((p) => [...p, { amount: 0, verifiedBy: "", verifiedUser: "", date: TODAY }]);
-  };
-  const updAdv = (i, key, val) => setAdvs((p) => p.map((a, j) => j === i ? { ...a, [key]: val } : a));
-  const rmAdv = (i) => setAdvs((p) => p.filter((_, j) => j !== i));
-
-  const startAuth = (type, index) => { setAuthModal({ type, index }); setAuthU(""); setAuthP(""); setAuthErr(""); };
+  const [advs, setAdvs] = useState(() => initAdv(data));
+  const [coV, setCoV] = useState({ by: data?.checkoutVerifiedBy||"", user: data?.checkoutVerifiedUser||"" });
+  const [authM, setAuthM] = useState(null); const [authU, setAuthU] = useState(""); const [authP, setAuthP] = useState(""); const [authE, setAuthE] = useState("");
+  const tAdv = advs.reduce((a2,a) => a2+(Number(a.amount)||0), 0);
+  const bal = (Number(f.total)||0) - tAdv;
+  const s = (k,v) => { const u = {...f,[k]:v}; if (k==="roomType"){const ar=rooms.filter(r=>r.type===v);if(ar.length)u.roomId=ar[0].id;} sF(u); };
+  const addAdv = () => { if(advs.length>=4)return alert("Máximo 4"); setAdvs(p=>[...p,{amount:0,verifiedBy:"",verifiedUser:"",date:TODAY}]); };
+  const updAdv = (i,k,v) => setAdvs(p=>p.map((a,j)=>j===i?{...a,[k]:v}:a));
+  const rmAdv = (i) => setAdvs(p=>p.filter((_,j)=>j!==i));
+  const startAuth = (type,index) => { setAuthM({type,index}); setAuthU(""); setAuthP(""); setAuthE(""); };
   const confirmAuth = () => {
-    if (authModal.type === "checkout") {
-      // Checkout: any registered user can validate
-      const found = (users || []).find((x) => x.user === authU && x.pass === authP);
-      if (!found) { setAuthErr("Usuario o contraseña incorrectos"); return; }
-      setCoVerified({ by: found.name, user: found.user });
-    } else {
-      // Advances: only authorized users
-      const found = AUTH_USERS.find((x) => x.user === authU && x.pass === authP);
-      if (!found) { setAuthErr("Credenciales incorrectas o usuario no autorizado"); return; }
-      updAdv(authModal.index, "verifiedBy", found.name);
-      updAdv(authModal.index, "verifiedUser", found.user);
-    }
-    setAuthModal(null);
+    if(authM.type==="checkout"){const found=(users||[]).find(x=>x.user===authU&&x.pass===authP);if(!found){setAuthE("Credenciales incorrectas");return;} setCoV({by:found.name,user:found.user});}
+    else{const found=AUTH_USERS.find(x=>x.user===authU&&x.pass===authP);if(!found){setAuthE("No autorizado");return;} updAdv(authM.index,"verifiedBy",found.name);updAdv(authM.index,"verifiedUser",found.user);}
+    setAuthM(null);
   };
-
   const sv = () => {
-    if (!f.guest || !f.doc || !f.ciDate || !f.coDate) return alert("Completa campos obligatorios (nombre, DNI, fechas)");
-    const checkin = f.ciDate + "T" + (f.ciTime || "13:00");
-    const checkout = f.coDate + "T" + (f.coTime || "12:00");
-    // Allow saving WITHOUT verification — verification is optional but tracked
-    // Only block finalization if balance > 0
-    if (f.state === "Finalizado" && balance > 0) {
-      return alert("No se puede finalizar: saldo pendiente S/ " + balance + ". Registra los pagos primero.");
-    }
-    onSave({
-      ...f, checkin, checkout,
-      advances: advs.map((a) => ({ ...a, amount: Number(a.amount) || 0 })),
-      advance: totalAdv, balance: balance, total: +f.total,
-      lastModBy: curUser.name,
-      checkoutVerifiedBy: coVerified.by,
-      checkoutVerifiedUser: coVerified.user
-    });
+    if(!f.guest||!f.doc||!f.ciDate||!f.coDate)return alert("Completa campos obligatorios");
+    const checkin=f.ciDate+"T"+(f.ciTime||"13:00"),checkout=f.coDate+"T"+(f.coTime||"12:00");
+    if(f.state==="Finalizado"&&bal>0)return alert("Saldo pendiente S/ "+bal);
+    onSave({...f,checkin,checkout,advances:advs.map(a=>({...a,amount:Number(a.amount)||0})),advance:tAdv,balance:bal,total:+f.total,lastModBy:curUser.name,checkoutVerifiedBy:coV.by,checkoutVerifiedUser:coV.user});
   };
-
-  const frms = rooms.filter((r) => r.type === f.roomType);
-  const roomOpts = frms.length ? frms.map((r) => ({ v: r.id, l: r.name })) : rooms.map((r) => ({ v: r.id, l: r.name }));
-  const showCoVerify = f.state === "Finalizado";
-  const isAuth = AUTH_USERS.some((au) => au.user === curUser.user);
-
+  const frms=rooms.filter(r=>r.type===f.roomType);
+  const roomOpts=frms.length?frms.map(r=>({v:r.id,l:r.name})):rooms.map(r=>({v:r.id,l:r.name}));
+  const showCoV=f.state==="Finalizado";
+  const isAuth=AUTH_USERS.some(au=>au.user===curUser.user);
   return (
-    <div className="mbg" onClick={onClose}>
-      <div className="mdl" style={{ position: "relative" }} onClick={(e) => e.stopPropagation()}>
-        <h3>{data ? "Editar " + data.id : "Nueva Reserva"}</h3>
-        <p style={{ fontSize: 11, color: "#888", marginBottom: 12 }}>
-          Registrado por: <strong>{data?.createdBy || curUser.name}</strong>
-          {data?.lastModBy && data.lastModBy !== data.createdBy && <span> · Mod: <strong>{data.lastModBy}</strong></span>}
-        </p>
-        <div className="fg">
-          <Fld label="Nombre *" value={f.guest} onChange={(v) => s("guest", v)} />
-          <Fld label="DNI *" value={f.doc} onChange={(v) => s("doc", v)} />
-          <Fld label="Teléfono" value={f.phone} onChange={(v) => s("phone", v)} />
-          <Fld label="Email" value={f.email} onChange={(v) => s("email", v)} />
-          <Fld label="Canal" type="select" opts={CHANNELS} value={f.channel} onChange={(v) => s("channel", v)} />
-          <Fld label="Tipo Hab." type="select" opts={types.map((t) => ({ v: t.id, l: t.name }))} value={f.roomType} onChange={(v) => s("roomType", v)} />
-          <Fld label="Habitación" type="select" opts={roomOpts} value={f.roomId} onChange={(v) => s("roomId", v)} />
-          <Fld label="Personas" type="number" min={1} value={f.persons} onChange={(v) => s("persons", v)} />
-          <Fld label="Fecha Check-in *" type="date" value={f.ciDate} onChange={(v) => s("ciDate", v)} />
-          <Fld label="Hora Check-in" type="time" value={f.ciTime} onChange={(v) => s("ciTime", v)} />
-          <Fld label="Fecha Check-out *" type="date" value={f.coDate} onChange={(v) => s("coDate", v)} />
-          <Fld label="Hora Check-out" type="time" value={f.coTime} onChange={(v) => s("coTime", v)} />
-          <Fld label="Estado" type="select" opts={RSTATES} value={f.state} onChange={(v) => s("state", v)} />
-          <Fld label="Pago" type="select" opts={PAYS} value={f.payment} onChange={(v) => s("payment", v)} />
-          {advs.some((a) => a.verifiedBy) && !isAuth
-            ? <div className="fld"><label>Total S/ 🔒</label><input type="number" value={f.total} readOnly style={{ background: "#f0f0f0", cursor: "not-allowed" }} /></div>
-            : <Fld label="Total S/" type="number" min={0} value={f.total} onChange={(v) => s("total", v)} />
-          }
-        </div>
-
-        {/* ADELANTOS */}
-        <div style={{ marginTop: 14, padding: 12, background: "#f9f7f4", borderRadius: 8, border: "1px solid #e0dcd6" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-            <span style={{ fontSize: 12, fontWeight: 700, color: "#6B3410" }}>💵 ADELANTOS ({advs.length}/4)</span>
-            {advs.length < 4 && <button className="ba bsm" onClick={addAdv}>+ Adelanto</button>}
-          </div>
-          {advs.length === 0 && <p style={{ fontSize: 12, color: "#999" }}>Sin adelantos registrados</p>}
-          {advs.map((a, i) => {
-            const locked = a.verifiedBy && !isAuth;
-            return (
-            <div key={i} className="adv-row" style={locked ? { opacity: 0.85 } : {}}>
-              <div className="adv-num">#{i + 1}</div>
-              <div className="fld" style={{ flex: 1 }}>
-                <label>Monto S/{locked ? " 🔒" : ""}</label>
-                <input type="number" min={0} value={a.amount} readOnly={locked} style={locked ? { background: "#f0f0f0", cursor: "not-allowed" } : {}} onChange={(e) => updAdv(i, "amount", e.target.value)} />
-              </div>
-              <div style={{ flex: 1.3, display: "flex", flexDirection: "column", gap: 3 }}>
-                <label style={{ fontSize: 11, fontWeight: 600, color: "#666", textTransform: "uppercase", letterSpacing: ".3px" }}>Conformidad</label>
-                {a.verifiedBy
-                  ? <span style={{ fontSize: 12, color: "#27ae60", fontWeight: 600, padding: "7px 0" }}>✅ {a.verifiedBy}</span>
-                  : Number(a.amount) > 0
-                    ? <button className="bc bsm" style={{ fontSize: 11 }} onClick={() => startAuth("adv", i)}>🔐 Validar pago</button>
-                    : <span style={{ fontSize: 11, color: "#999", padding: "7px 0" }}>—</span>
-                }
-              </div>
-              {locked
-                ? <span style={{ marginTop: 16, fontSize: 10, color: "#999", width: 24, textAlign: "center" }}>🔒</span>
-                : <button className="ab" style={{ marginTop: 16 }} onClick={() => rmAdv(i)}>🗑️</button>
-              }
-            </div>
-            );
-          })}
-          <div style={{ display: "flex", gap: 16, marginTop: 8, fontSize: 13, fontWeight: 600 }}>
-            <span>Total adelantos: <span style={{ color: "#27ae60" }}>S/ {totalAdv}</span></span>
-            <span>Saldo: <span style={{ color: balance > 0 ? "#c0392b" : "#27ae60" }}>S/ {balance}</span></span>
-          </div>
-        </div>
-
-        {/* CHECKOUT VERIFICATION */}
-        {showCoVerify && (
-          <div style={{ marginTop: 14, background: coVerified.by ? "#e8f5e9" : "#fff8e1", padding: 12, borderRadius: 8, border: "1px solid " + (coVerified.by ? "#a5d6a7" : "#ffe082") }}>
-            <span style={{ fontSize: 12, fontWeight: 700, color: coVerified.by ? "#2e7d32" : "#e65100" }}>
-              {coVerified.by ? "✅ CHECKOUT VERIFICADO" : "⚠️ VERIFICACIÓN DE CHECKOUT"}
-            </span>
-            {balance > 0 && <p style={{ fontSize: 12, color: "#c0392b", marginTop: 4 }}>Saldo pendiente: S/ {balance}</p>}
-            {coVerified.by
-              ? <p style={{ fontSize: 12, color: "#2e7d32", marginTop: 4 }}>Verificado por: <strong>{coVerified.by}</strong></p>
-              : <div style={{ marginTop: 8 }}><button className="bc bsm" onClick={() => startAuth("checkout")}>🔐 Validar checkout</button></div>
-            }
-          </div>
-        )}
-        {!showCoVerify && data?.checkoutVerifiedBy && (
-          <div style={{ marginTop: 10, background: "#e8f5e9", padding: 10, borderRadius: 8, border: "1px solid #a5d6a7" }}>
-            <span style={{ color: "#2e7d32", fontSize: 12 }}>✅ Checkout verificado por: {data.checkoutVerifiedBy}</span>
-          </div>
-        )}
-
-        <div className="fld fw" style={{ marginTop: 10 }}><label>Comentarios</label><textarea value={f.comments} onChange={(e) => s("comments", e.target.value)} /></div>
-        <div className="mf"><button className="bc" onClick={onClose}>Cancelar</button><button className="ba" onClick={sv}>{data ? "Guardar" : "Crear"}</button></div>
-
-        {/* AUTH SUB-MODAL */}
-        {authModal && (
-          <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 2000, padding: 16 }}>
-            <div style={{ background: "#fff", padding: 24, borderRadius: 12, width: "100%", maxWidth: 340, boxShadow: "0 8px 24px rgba(0,0,0,.3)" }} onClick={(e) => e.stopPropagation()}>
-              <h4 style={{ fontSize: 14, marginBottom: 4, color: "#6B3410" }}>🔐 Validar {authModal.type === "checkout" ? "Checkout" : "Adelanto #" + (authModal.index + 1)}</h4>
-              <p style={{ fontSize: 11, color: "#888", marginBottom: 12 }}>{authModal.type === "checkout" ? "Cualquier usuario del sistema puede validar el checkout" : "Solo usuarios autorizados pueden dar conformidad de pago"}</p>
-              <div className="fld"><label>{authModal.type === "checkout" ? "Usuario" : "Usuario autorizado"}</label><input value={authU} onChange={(e) => { setAuthU(e.target.value); setAuthErr(""); }} placeholder="usuario" autoComplete="off" /></div>
-              <div className="fld" style={{ marginTop: 8 }}><label>Contraseña</label><input type="password" value={authP} onChange={(e) => { setAuthP(e.target.value); setAuthErr(""); }} placeholder="contraseña" onKeyDown={(e) => e.key === "Enter" && confirmAuth()} autoComplete="off" /></div>
-              {authErr && <p style={{ color: "#c0392b", fontSize: 11, marginTop: 6 }}>{authErr}</p>}
-              <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
-                <button className="ba bsm" onClick={confirmAuth}>Confirmar</button>
-                <button className="bc bsm" onClick={() => setAuthModal(null)}>Cancelar</button>
-              </div>
-            </div>
-          </div>
-        )}
+    <div className="mbg" onClick={onClose}><div className="mdl" style={{position:"relative"}} onClick={e=>e.stopPropagation()}>
+      <h3>{data?"Editar "+data.id:"Nueva Reserva"}</h3>
+      <p style={{fontSize:11,color:"#888",marginBottom:12}}>Por: <strong>{data?.createdBy||curUser.name}</strong>{data?.lastModBy&&data.lastModBy!==data.createdBy&&<span> · Mod: <strong>{data.lastModBy}</strong></span>}</p>
+      <div className="fg">
+        <Fld label="Nombre *" value={f.guest} onChange={v=>s("guest",v)} /><Fld label="DNI *" value={f.doc} onChange={v=>s("doc",v)} /><Fld label="Teléfono" value={f.phone} onChange={v=>s("phone",v)} /><Fld label="Email" value={f.email} onChange={v=>s("email",v)} />
+        <Fld label="Canal" type="select" opts={CHANNELS} value={f.channel} onChange={v=>s("channel",v)} /><Fld label="Tipo Hab." type="select" opts={types.map(t=>({v:t.id,l:t.name}))} value={f.roomType} onChange={v=>s("roomType",v)} />
+        <Fld label="Habitación" type="select" opts={roomOpts} value={f.roomId} onChange={v=>s("roomId",v)} /><Fld label="Personas" type="number" min={1} value={f.persons} onChange={v=>s("persons",v)} />
+        <Fld label="Fecha Check-in *" type="date" value={f.ciDate} onChange={v=>s("ciDate",v)} /><Fld label="Hora Check-in" type="time" value={f.ciTime} onChange={v=>s("ciTime",v)} />
+        <Fld label="Fecha Check-out *" type="date" value={f.coDate} onChange={v=>s("coDate",v)} /><Fld label="Hora Check-out" type="time" value={f.coTime} onChange={v=>s("coTime",v)} />
+        <Fld label="Estado" type="select" opts={RSTATES} value={f.state} onChange={v=>s("state",v)} /><Fld label="Pago" type="select" opts={PAYS} value={f.payment} onChange={v=>s("payment",v)} />
+        {advs.some(a=>a.verifiedBy)&&!isAuth?<div className="fld"><label>Total S/ 🔒</label><input type="number" value={f.total} readOnly style={{background:"#f0f0f0",cursor:"not-allowed"}}/></div>:<Fld label="Total S/" type="number" min={0} value={f.total} onChange={v=>s("total",v)} />}
       </div>
-    </div>
+      <div style={{marginTop:14,padding:12,background:"#f9f7f4",borderRadius:8,border:"1px solid #e0dcd6"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8,flexWrap:"wrap"}}><span style={{fontSize:12,fontWeight:700,color:"#6B3410"}}>💵 ADELANTOS ({advs.length}/4)</span>{advs.length<4&&<button className="ba bsm" onClick={addAdv}>+ Adelanto</button>}</div>
+        {advs.length===0&&<p style={{fontSize:12,color:"#999"}}>Sin adelantos</p>}
+        {advs.map((a,i)=>{const lk=a.verifiedBy&&!isAuth;return(
+          <div key={i} className="adv-row" style={lk?{opacity:.85}:{}}>
+            <div className="adv-num">#{i+1}</div>
+            <div className="fld" style={{flex:1}}><label>Monto S/{lk?" 🔒":""}</label><input type="number" min={0} value={a.amount} readOnly={lk} style={lk?{background:"#f0f0f0",cursor:"not-allowed"}:{}} onChange={e=>updAdv(i,"amount",e.target.value)}/></div>
+            <div style={{flex:1.3,display:"flex",flexDirection:"column",gap:3}}><label style={{fontSize:11,fontWeight:600,color:"#666",textTransform:"uppercase",letterSpacing:".3px"}}>Conformidad</label>
+              {a.verifiedBy?<span style={{fontSize:12,color:"#27ae60",fontWeight:600,padding:"7px 0"}}>✅ {a.verifiedBy}</span>:Number(a.amount)>0?<button className="bc bsm" style={{fontSize:11}} onClick={()=>startAuth("adv",i)}>🔐 Validar</button>:<span style={{fontSize:11,color:"#999",padding:"7px 0"}}>—</span>}
+            </div>
+            {lk?<span style={{marginTop:16,fontSize:10,color:"#999",width:24,textAlign:"center"}}>🔒</span>:<button className="ab" style={{marginTop:16}} onClick={()=>rmAdv(i)}>🗑️</button>}
+          </div>);})}
+        <div style={{display:"flex",gap:16,marginTop:8,fontSize:13,fontWeight:600,flexWrap:"wrap"}}><span>Adelantos: <span style={{color:"#27ae60"}}>S/ {tAdv}</span></span><span>Saldo: <span style={{color:bal>0?"#c0392b":"#27ae60"}}>S/ {bal}</span></span></div>
+      </div>
+      {showCoV&&<div style={{marginTop:14,background:coV.by?"#e8f5e9":"#fff8e1",padding:12,borderRadius:8,border:"1px solid "+(coV.by?"#a5d6a7":"#ffe082")}}><span style={{fontSize:12,fontWeight:700,color:coV.by?"#2e7d32":"#e65100"}}>{coV.by?"✅ CHECKOUT VERIFICADO":"⚠️ VERIFICACIÓN"}</span>{coV.by?<p style={{fontSize:12,color:"#2e7d32",marginTop:4}}>Por: <strong>{coV.by}</strong></p>:<div style={{marginTop:8}}><button className="bc bsm" onClick={()=>startAuth("checkout")}>🔐 Validar checkout</button></div>}</div>}
+      <div className="fld fw" style={{marginTop:10}}><label>Comentarios</label><textarea value={f.comments} onChange={e=>s("comments",e.target.value)}/></div>
+      <div className="mf"><button className="bc" onClick={onClose}>Cancelar</button><button className="ba" onClick={sv}>{data?"Guardar":"Crear"}</button></div>
+      {authM&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.6)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:2000,padding:16}}><div style={{background:"#fff",padding:24,borderRadius:12,width:"100%",maxWidth:340,boxShadow:"0 8px 24px rgba(0,0,0,.3)"}} onClick={e=>e.stopPropagation()}>
+        <h4 style={{fontSize:14,marginBottom:4,color:"#6B3410"}}>🔐 Validar {authM.type==="checkout"?"Checkout":"Adelanto #"+(authM.index+1)}</h4>
+        <p style={{fontSize:11,color:"#888",marginBottom:12}}>{authM.type==="checkout"?"Cualquier usuario":"Solo autorizados"}</p>
+        <div className="fld"><label>Usuario</label><input value={authU} onChange={e=>{setAuthU(e.target.value);setAuthE("");}} placeholder="usuario" autoComplete="off"/></div>
+        <div className="fld" style={{marginTop:8}}><label>Contraseña</label><input type="password" value={authP} onChange={e=>{setAuthP(e.target.value);setAuthE("");}} placeholder="contraseña" onKeyDown={e=>e.key==="Enter"&&confirmAuth()} autoComplete="off"/></div>
+        {authE&&<p style={{color:"#c0392b",fontSize:11,marginTop:6}}>{authE}</p>}
+        <div style={{display:"flex",gap:8,marginTop:14}}><button className="ba bsm" onClick={confirmAuth}>Confirmar</button><button className="bc bsm" onClick={()=>setAuthM(null)}>Cancelar</button></div>
+      </div></div>}
+    </div></div>
   );
 }
 
-/* ═══ DISPONIBILIDAD — real-time hours ═══ */
+/* PgDisp - responsive, mobile 2 days */
 function PgDisp({ rooms, types, res, hols, calD, setCalD }) {
-  const days = useMemo(() => { const r = []; for (let i = -3; i <= 4; i++) r.push(addD(calD, i)); return r; }, [calD]);
-  const [dispInput, setDispInput] = useState(() => { const p = calD.split("-"); return p[2] + "/" + p[1] + "/" + p[0]; });
+  const isMobile = useIsMobile();
+  const bef = isMobile ? 2 : 3, aft = isMobile ? 2 : 4;
+  const days = useMemo(() => { const r = []; for (let i = -bef; i <= aft; i++) r.push(addD(calD, i)); return r; }, [calD, bef, aft]);
+  const [dispInput, setDispInput] = useState(() => { const p = calD.split("-"); return p[2]+"/"+p[1]+"/"+p[0]; });
   const [tt, sTt] = useState(null);
-  const [filtRoom, setFiltRoom] = useState("all");
-  const [filtType, setFiltType] = useState("all");
-  const sl = (s) => (s === "occ" ? "OCUPADO" : s === "res" ? "RESERVADO" : "LIBRE");
+  const [filtRoom, setFiltRoom] = useState("all"); const [filtType, setFiltType] = useState("all");
+  const sl = (s) => (s === "occ" ? "OCUP." : s === "res" ? "RESERV." : "LIBRE");
   const sc = (s) => (s === "occ" ? "co" : s === "res" ? "cr" : "cf");
-
-  const filteredRooms = useMemo(() => {
-    let fr = rooms;
-    if (filtType !== "all") fr = fr.filter((r) => r.type === filtType);
-    if (filtRoom !== "all") fr = fr.filter((r) => r.id === filtRoom);
-    return fr.slice().sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
-  }, [rooms, filtType, filtRoom]);
-
-  const applyDate = (val) => {
-    setDispInput(val);
-    const m = val.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
-    if (m) { setCalD(m[3] + "-" + m[2] + "-" + m[1]); }
-  };
-  const onDateBlur = () => { const p = calD.split("-"); setDispInput(p[2] + "/" + p[1] + "/" + p[0]); };
-  const navDate = (offset) => { const nd = addD(calD, offset); setCalD(nd); const p = nd.split("-"); setDispInput(p[2] + "/" + p[1] + "/" + p[0]); };
+  const filteredRooms = useMemo(() => { let fr = rooms; if (filtType !== "all") fr = fr.filter(r => r.type === filtType); if (filtRoom !== "all") fr = fr.filter(r => r.id === filtRoom); return fr.slice().sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true })); }, [rooms, filtType, filtRoom]);
+  const applyDate = (val) => { setDispInput(val); const m = val.match(/^(\d{2})\/(\d{2})\/(\d{4})$/); if (m) setCalD(m[3]+"-"+m[2]+"-"+m[1]); };
+  const onDateBlur = () => { const p = calD.split("-"); setDispInput(p[2]+"/"+p[1]+"/"+p[0]); };
+  const navDate = (off) => { const nd = addD(calD, off); setCalD(nd); const p = nd.split("-"); setDispInput(p[2]+"/"+p[1]+"/"+p[0]); };
 
   return (
     <div className="fi">
-      <div className="pt">
-        <h2 className="ptt">Disponibilidad de Habitaciones</h2>
-        <div className="ptr">
-          <span style={{ fontSize: 13, color: "#666" }}>Consultar fecha:</span>
-          <input className="di" value={dispInput} onChange={(e) => applyDate(e.target.value)} onBlur={onDateBlur} placeholder="dd/mm/yyyy" style={{ width: 120, textAlign: "center" }} />
-        </div>
-      </div>
-      <div className="lr">
-        <span className="li"><span className="ld dg" />Libre</span>
-        <span className="li"><span className="ld dor" />Reservado</span>
-        <span className="li"><span className="ld dr" />Ocupado</span>
-        <span className="lnfo">3 días antes y 4 días después de la fecha consultada</span>
-      </div>
-      <div style={{ display: "flex", gap: 10, marginBottom: 12, flexWrap: "wrap", alignItems: "center" }}>
-        <div className="fld" style={{ width: 180 }}>
-          <label>Filtrar por tipo</label>
-          <select value={filtType} onChange={(e) => { setFiltType(e.target.value); setFiltRoom("all"); }}>
-            <option value="all">Todos los tipos</option>
-            {types.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-          </select>
-        </div>
-        <div className="fld" style={{ width: 180 }}>
-          <label>Filtrar por habitación</label>
-          <select value={filtRoom} onChange={(e) => setFiltRoom(e.target.value)}>
-            <option value="all">Todas las habitaciones</option>
-            {(filtType !== "all" ? rooms.filter((r) => r.type === filtType) : rooms)
-              .slice().sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
-              .map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
-          </select>
-        </div>
-        {(filtType !== "all" || filtRoom !== "all") && (
-          <button className="bc bsm" style={{ marginTop: 16 }} onClick={() => { setFiltType("all"); setFiltRoom("all"); }}>Limpiar filtros</button>
-        )}
+      <div className="pt"><h2 className="ptt">Disponibilidad</h2><div className="ptr"><span style={{fontSize:13,color:"#666"}}>Fecha:</span><input className="di" value={dispInput} onChange={e=>applyDate(e.target.value)} onBlur={onDateBlur} placeholder="dd/mm/yyyy" style={{width:120,textAlign:"center"}}/></div></div>
+      <div className="lr"><span className="li"><span className="ld dg"/>Libre</span><span className="li"><span className="ld dor"/>Reservado</span><span className="li"><span className="ld dr"/>Ocupado</span><span className="lnfo">{isMobile?"2 días antes/después":"3 antes, 4 después"}</span></div>
+      <div style={{display:"flex",gap:10,marginBottom:12,flexWrap:"wrap",alignItems:"center"}}>
+        <div className="fld" style={{width:isMobile?"100%":180}}><label>Tipo</label><select value={filtType} onChange={e=>{setFiltType(e.target.value);setFiltRoom("all");}}><option value="all">Todos</option>{types.map(t=><option key={t.id} value={t.id}>{t.name}</option>)}</select></div>
+        <div className="fld" style={{width:isMobile?"100%":180}}><label>Habitación</label><select value={filtRoom} onChange={e=>setFiltRoom(e.target.value)}><option value="all">Todas</option>{(filtType!=="all"?rooms.filter(r=>r.type===filtType):rooms).slice().sort((a,b)=>a.name.localeCompare(b.name,undefined,{numeric:true})).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select></div>
+        {(filtType!=="all"||filtRoom!=="all")&&<button className="bc bsm" style={{marginTop:isMobile?0:16}} onClick={()=>{setFiltType("all");setFiltRoom("all");}}>Limpiar</button>}
       </div>
       <div className="as">
-        <div className="anb apl" onClick={() => navDate(-7)}>‹</div>
-        <div className="anb anr" onClick={() => navDate(7)}>›</div>
-        <table className="at">
-          <thead><tr>
-            <th className="ath-r">Hab.</th><th className="ath-t">Tipo</th>
-            {days.map((d) => (
-              <th key={d} className={"ath-d" + (d === TODAY ? " aty" : "") + (d === calD ? " aty" : "") + (isHol(d, hols) ? " athol" : "")}>
-                <span className="adw">{dwk(d)}</span>
-                <span className="adn">{String(dnum(d)).padStart(2, "0")}/{msh(d)}</span>
-              </th>
-            ))}
-          </tr></thead>
-          <tbody>
-            {filteredRooms.map((rm) => {
-              const tp = types.find((t) => t.id === rm.type);
-              return (
-                <tr key={rm.id}>
-                  <td className="avr">{rm.name}</td>
-                  <td className="avt">{tp?.name}</td>
-                  {days.map((d) => {
-                    const { am, pm, ar, pr } = roomSt(rm.id, d, res);
-                    const spl = am !== pm || (ar && pr && ar.id !== pr.id);
-                    const mE = (e) => {
-                      const rc = e.currentTarget.getBoundingClientRect();
-                      let tx = "Hab. " + rm.name + " — " + d;
-                      if (spl) {
-                        tx += "\nAM: " + sl(am) + (ar ? " — " + ar.guest + " (hasta " + getTime(ar.checkout) + ")" : "");
-                        tx += "\nPM: " + sl(pm) + (pr ? " — " + pr.guest + " (desde " + getTime(pr.checkin) + ")" : "");
-                      } else {
-                        tx += "\nEstado: " + sl(am);
-                        if (ar) tx += "\nHuésped: " + ar.guest + "\nCheck-in: " + fmtDT(ar.checkin) + "\nCheck-out: " + fmtDT(ar.checkout);
-                      }
-                      sTt({ x: rc.left + rc.width / 2, y: rc.top - 4, tx });
-                    };
-                    if (spl) {
-                      return (
-                        <td key={d} className="avsp" onMouseEnter={mE} onMouseLeave={() => sTt(null)}>
-                          <div className="spw">
-                            <div className={"sph " + sc(am)}><span className="cl">{sl(am)}</span>{ar && <span className="cgs">{ar.guest.split(" ")[0]}</span>}</div>
-                            <div className={"sph " + sc(pm)}><span className="cl">{sl(pm)}</span>{pr && <span className="cgs">{pr.guest.split(" ")[0]}</span>}</div>
-                          </div>
-                        </td>
-                      );
-                    }
-                    return (
-                      <td key={d} className={"avc " + sc(am)} onMouseEnter={mE} onMouseLeave={() => sTt(null)}>
-                        <span className="cl">{sl(am)}</span>{ar && <span className="cgs">{ar.guest.split(" ")[0]}</span>}
-                      </td>
-                    );
-                  })}
-                </tr>
-              );
+        <div className="anb apl" onClick={()=>navDate(isMobile?-3:-7)}>‹</div><div className="anb anr" onClick={()=>navDate(isMobile?3:7)}>›</div>
+        <table className="at"><thead><tr><th className="ath-r">Hab.</th><th className="ath-t desk-only">Tipo</th>
+          {days.map(d=>(<th key={d} className={"ath-d"+(d===TODAY?" aty":"")+(d===calD?" aty":"")+(isHol(d,hols)?" athol":"")}><span className="adw">{dwk(d)}</span><span className="adn">{String(dnum(d)).padStart(2,"0")}/{msh(d)}</span></th>))}
+        </tr></thead><tbody>
+          {filteredRooms.map(rm=>{const tp=types.find(t=>t.id===rm.type);return(<tr key={rm.id}><td className="avr">{rm.name}</td><td className="avt desk-only">{tp?.name}</td>
+            {days.map(d=>{const{am,pm,ar,pr}=roomSt(rm.id,d,res);const spl=am!==pm||(ar&&pr&&ar.id!==pr.id);
+              const mE=e=>{const rc=e.currentTarget.getBoundingClientRect();let tx="Hab. "+rm.name+" — "+d;if(spl){tx+="\nAM: "+sl(am)+(ar?" — "+ar.guest:"");tx+="\nPM: "+sl(pm)+(pr?" — "+pr.guest:"");}else{tx+="\n"+sl(am);if(ar)tx+="\n"+ar.guest+"\n"+fmtDT(ar.checkin)+" → "+fmtDT(ar.checkout);}sTt({x:rc.left+rc.width/2,y:rc.top-4,tx});};
+              if(spl)return(<td key={d} className="avsp" onMouseEnter={mE} onMouseLeave={()=>sTt(null)}><div className="spw"><div className={"sph "+sc(am)}><span className="cl">{sl(am)}</span>{ar&&<span className="cgs">{ar.guest.split(" ")[0]}</span>}</div><div className={"sph "+sc(pm)}><span className="cl">{sl(pm)}</span>{pr&&<span className="cgs">{pr.guest.split(" ")[0]}</span>}</div></div></td>);
+              return(<td key={d} className={"avc "+sc(am)} onMouseEnter={mE} onMouseLeave={()=>sTt(null)}><span className="cl">{sl(am)}</span>{ar&&<span className="cgs">{ar.guest.split(" ")[0]}</span>}</td>);
             })}
-          </tbody>
-        </table>
+          </tr>);})}
+        </tbody></table>
       </div>
-      {tt && <div className="ttp" style={{ left: tt.x, top: tt.y }}>{tt.tx.split("\n").map((l, i) => <div key={i}>{l}</div>)}</div>}
+      {tt&&<div className="ttp" style={{left:tt.x,top:tt.y}}>{tt.tx.split("\n").map((l,i)=><div key={i}>{l}</div>)}</div>}
     </div>
   );
 }
 
-/* ═══ CALENDARIO + FESTIVIDADES ═══ */
-function PgCal({ hols, addHoliday, updateHoliday, deleteHoliday }) {
-  const [yr, setYr] = useState(2026);
-  const [edH, sEdH] = useState(null);
-  const [fm, sFm] = useState({ name: "", s: "", e: "", icon: "🎉" });
-  const ics = ["🎉", "✝️", "🇵🇪", "🎄", "🎃", "🌸", "⭐", "🎵", "🏛️", "🎆", "☀️", "🕯️", "🏖️", "🎭"];
-  const saveH = () => {
-    if (!fm.name || !fm.s || !fm.e) return alert("Completa todo");
-    if (edH === "new") addHoliday({ ...fm, id: "h" + Date.now() });
-    else updateHoliday(edH, fm);
-    sEdH(null);
-  };
-  return (
-    <div className="fi">
-      <div className="pt">
-        <h2 className="ptt">Calendario Anual</h2>
-        <div className="ptr">
-          <button className="bc bsm" onClick={() => setYr(yr - 1)}>◀ {yr - 1}</button>
-          <button className="bc bsm" onClick={() => setYr(yr + 1)}>{yr + 1} ▶</button>
-        </div>
-      </div>
-      <div className="cyh">{yr}</div>
-      <div className="cyg">
-        {Array.from({ length: 12 }, (_, m) => {
-          const wks = buildMonth(yr, m);
-          return (
-            <div key={m} className="cmc">
-              <div className="cmt">{MN[m]}</div>
-              <table className="cmtb">
-                <thead><tr>{DW.map((d) => <th key={d}>{d}</th>)}</tr></thead>
-                <tbody>
-                  {wks.map((w, wi) => (
-                    <tr key={wi}>
-                      {w.map((day, di) => {
-                        if (day === null) return <td key={di} className="cd-empty" />;
-                        const ds = yr + "-" + String(m + 1).padStart(2, "0") + "-" + String(day).padStart(2, "0");
-                        const hh = holsOn(ds, hols);
-                        const ih = hh.length > 0;
-                        const we = di >= 5;
-                        const isT = ds === TODAY;
-                        return (
-                          <td key={di} className={"cd" + (ih ? " cd-hol" : "") + (we && !ih ? " cd-we" : "") + (isT ? " cd-today" : "")} title={ih ? hh.map((x) => x.icon + " " + x.name).join(", ") : ""}>
-                            <span className="cd-num">{day}</span>
-                            {ih && <span className="cd-ico">{hh.map((x) => x.icon).join("")}</span>}
-                          </td>
-                        );
-                      })}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          );
-        })}
-      </div>
-      <div className="clg">
-        <span className="clgi"><span className="ld dg" />Normal</span>
-        <span className="clgi"><span className="ld dr" />Festividad</span>
-        <span className="clgi"><span className="ld" style={{ background: "#8B4513" }} />Hoy</span>
-      </div>
-      {/* Festividades */}
-      <div className="crd" style={{ marginTop: 20 }}>
-        <div className="pt" style={{ marginBottom: 12 }}>
-          <h3 style={{ fontSize: 16 }}>🎉 Gestión de Festividades</h3>
-          <button className="ba bsm" onClick={() => { sEdH("new"); sFm({ name: "", s: "", e: "", icon: "🎉" }); }}>+ Nueva</button>
-        </div>
-        {edH && (
-          <div style={{ background: "#f9f7f4", padding: 16, borderRadius: 8, marginBottom: 16, border: "1px solid #e0dcd6" }}>
-            <h4 style={{ fontSize: 14, marginBottom: 10 }}>{edH === "new" ? "Nueva Festividad" : "Editar"}</h4>
-            <div className="fg">
-              <Fld label="Nombre" value={fm.name} onChange={(v) => sFm({ ...fm, name: v })} />
-              <Fld label="Inicio" type="date" value={fm.s} onChange={(v) => sFm({ ...fm, s: v })} />
-              <Fld label="Fin" type="date" value={fm.e} onChange={(v) => sFm({ ...fm, e: v })} />
-              <div className="fld"><label>Ícono</label><div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>{ics.map((i) => <button key={i} className={"ib" + (fm.icon === i ? " ac" : "")} onClick={() => sFm({ ...fm, icon: i })}>{i}</button>)}</div></div>
-            </div>
-            <div style={{ display: "flex", gap: 8, marginTop: 12 }}><button className="ba bsm" onClick={saveH}>Guardar</button><button className="bc bsm" onClick={() => sEdH(null)}>Cancelar</button></div>
-          </div>
-        )}
-        {hols.map((h) => (
-          <div key={h.id} className="fest-row">
-            <span style={{ fontSize: 20 }}>{h.icon}</span>
-            <div style={{ flex: 1 }}><strong>{h.name}</strong><span style={{ color: "#888", fontSize: 12, marginLeft: 8 }}>{h.s} → {h.e}</span></div>
-            <button className="ab" onClick={() => { sEdH(h.id); sFm({ ...h }); }}>✏️</button>
-            <button className="ab" onClick={() => { if (confirm("¿Eliminar " + h.name + "?")) deleteHoliday(h.id); }}>🗑️</button>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-/* ═══ HABITACIONES + TARIFARIO + GESTIÓN DE TIPOS ═══ */
+/* PgHab - merged tipo+tarifa */
 function PgHab({ rooms, updateRoom, deleteRoom, types, addType, updateType, deleteType, sel, setSel, setModal }) {
-  const [ob, sOb] = useState("");
-  const fr = useRef();
-  const s = rooms.find((r) => r.id === sel);
-  const tp = s ? types.find((t) => t.id === s.type) : null;
-  const [edTar, sEdTar] = useState(false);
-  const [tarFm, sTarFm] = useState({});
+  const [ob, sOb] = useState(""); const fr = useRef();
+  const s = rooms.find(r => r.id === sel); const tp = s ? types.find(t => t.id === s.type) : null;
   const [showTypes, setShowTypes] = useState(false);
   const [edType, setEdType] = useState(null);
   const [typeFm, setTypeFm] = useState({ name: "", base: 100, high: 150, beds15: 1, beds2: 0 });
-  const aO = () => { if (!ob.trim() || !sel) return; const rm = rooms.find((r) => r.id === sel); updateRoom(sel, { ...rm, obs: [...rm.obs, { text: ob.trim(), date: TODAY }] }); sOb(""); };
-  const hP = (e) => { const f2 = e.target.files[0]; if (!f2 || !sel) return; const rd = new FileReader(); rd.onload = (ev) => { const rm = rooms.find((r) => r.id === sel); updateRoom(sel, { ...rm, photos: [...rm.photos, { id: Date.now(), url: ev.target.result }] }); }; rd.readAsDataURL(f2); e.target.value = ""; };
+  const [edTar, sEdTar] = useState(false);
+  const [tarFm, sTarFm] = useState({});
   const [zoomImg, setZoomImg] = useState(null);
-
-  const typeCap = (typeFm.beds15 || 0) + 2 * (typeFm.beds2 || 0);
-
-  const saveType = () => {
-    if (!typeFm.name) return alert("Ingresa el nombre del tipo");
-    const cap = (Number(typeFm.beds15) || 0) + 2 * (Number(typeFm.beds2) || 0);
-    if (edType === "new") {
-      addType({ id: typeFm.name.toLowerCase().replace(/\s+/g, "_") + "_" + Date.now(), name: typeFm.name, base: +typeFm.base, high: +typeFm.high, beds15: +typeFm.beds15, beds2: +typeFm.beds2, cap });
-    } else {
-      updateType(edType, { name: typeFm.name, base: +typeFm.base, high: +typeFm.high, beds15: +typeFm.beds15, beds2: +typeFm.beds2, cap });
-    }
-    setEdType(null);
-  };
+  const typeCap = (typeFm.beds15||0)+2*(typeFm.beds2||0);
+  const aO = () => { if(!ob.trim()||!sel)return; const rm=rooms.find(r=>r.id===sel); updateRoom(sel,{...rm,obs:[...rm.obs,{text:ob.trim(),date:TODAY}]}); sOb(""); };
+  const hP = (e) => { const f2=e.target.files[0]; if(!f2||!sel)return; const rd=new FileReader(); rd.onload=(ev)=>{const rm=rooms.find(r=>r.id===sel);updateRoom(sel,{...rm,photos:[...rm.photos,{id:Date.now(),url:ev.target.result}]});}; rd.readAsDataURL(f2); e.target.value=""; };
+  const saveType = () => { if(!typeFm.name)return alert("Nombre requerido"); const cap=(Number(typeFm.beds15)||0)+2*(Number(typeFm.beds2)||0); if(edType==="new")addType({id:typeFm.name.toLowerCase().replace(/\s+/g,"_")+"_"+Date.now(),name:typeFm.name,base:+typeFm.base,high:+typeFm.high,beds15:+typeFm.beds15,beds2:+typeFm.beds2,cap}); else updateType(edType,{name:typeFm.name,base:+typeFm.base,high:+typeFm.high,beds15:+typeFm.beds15,beds2:+typeFm.beds2,cap}); setEdType(null); };
 
   return (
     <div className="fi">
-      <div className="pt"><h2 className="ptt">Habitaciones & Tarifario</h2><div className="ptr"><button className="ba" onClick={() => setModal({ t: "addRoom" })}>+ Habitación</button><button className="bc bsm" onClick={() => setShowTypes(!showTypes)}>{showTypes ? "Ocultar" : "Gestionar"} Tipos ({types.length})</button></div></div>
-
-      {/* ═══ GESTIÓN DE TIPOS DE HABITACIÓN ═══ */}
-      {showTypes && (
-        <div className="crd" style={{ marginBottom: 16 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-            <h4 style={{ fontSize: 15, color: "#6B3410", margin: 0 }}>🏷️ Tipos de Habitación ({types.length})</h4>
-            <button className="ba bsm" onClick={() => { setEdType("new"); setTypeFm({ name: "", base: 100, high: 150, beds15: 1, beds2: 0 }); }}>+ Nuevo Tipo</button>
-          </div>
-          {edType && (
-            <div style={{ background: "#f9f7f4", padding: 16, borderRadius: 8, marginBottom: 12, border: "1px solid #e0dcd6" }}>
-              <h4 style={{ fontSize: 14, marginBottom: 10 }}>{edType === "new" ? "Nuevo Tipo" : "Editar Tipo"}</h4>
-              <div className="fg">
-                <Fld label="Nombre del tipo" value={typeFm.name} onChange={(v) => setTypeFm({ ...typeFm, name: v })} />
-                <Fld label="Precio Normal S/" type="number" min={0} value={typeFm.base} onChange={(v) => setTypeFm({ ...typeFm, base: v })} />
-                <Fld label="Precio Alta S/" type="number" min={0} value={typeFm.high} onChange={(v) => setTypeFm({ ...typeFm, high: v })} />
-                <Fld label="Camas plaza y media" type="number" min={0} value={typeFm.beds15} onChange={(v) => setTypeFm({ ...typeFm, beds15: +v })} />
-                <Fld label="Camas dos plazas" type="number" min={0} value={typeFm.beds2} onChange={(v) => setTypeFm({ ...typeFm, beds2: +v })} />
-                <div className="fld"><label>Capacidad (auto)</label><input type="number" value={typeCap} readOnly style={{ opacity: 0.6, background: "#f0f0f0" }} /></div>
-              </div>
-              <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-                <button className="ba bsm" onClick={saveType}>Guardar</button>
-                <button className="bc bsm" onClick={() => setEdType(null)}>Cancelar</button>
-              </div>
-            </div>
-          )}
-          <div className="tw">
-            <table className="tb">
-              <thead><tr><th>Nombre</th><th>Normal</th><th>Alta</th><th>Camas 1½</th><th>Camas 2P</th><th>Cap.</th><th>Hab.</th><th></th></tr></thead>
-              <tbody>
-                {types.length === 0 && <tr><td colSpan={8} className="empty">No hay tipos creados</td></tr>}
-                {types.map((t) => {
-                  const count = rooms.filter((r) => r.type === t.id).length;
-                  return (
-                    <tr key={t.id}>
-                      <td style={{ fontWeight: 600 }}>{t.name}</td>
-                      <td>S/ {t.base}</td>
-                      <td>S/ {t.high}</td>
-                      <td>{t.beds15 || 0}</td>
-                      <td>{t.beds2 || 0}</td>
-                      <td>{t.cap}</td>
-                      <td>{count}</td>
-                      <td className="tact">
-                        <button className="ab" onClick={() => { setEdType(t.id); setTypeFm({ name: t.name, base: t.base, high: t.high, beds15: t.beds15 || 0, beds2: t.beds2 || 0 }); }}>✏️</button>
-                        <button className="ab" onClick={() => { if (confirm("¿Eliminar tipo \"" + t.name + "\"?")) deleteType(t.id); }}>🗑️</button>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      <div className="rg">
-        {rooms.slice().sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true })).map((r) => {
-          const t2 = types.find((t) => t.id === r.type);
-          return (
-            <div key={r.id} className={"rc" + (sel === r.id ? " ac" : "")} onClick={() => { setSel(r.id); sEdTar(false); }}>
-              <div className="rn">{r.name}</div><div className="rtl">{t2?.name}</div><div className="rmeta">Piso {r.floor}</div>
-            </div>
-          );
-        })}
+      <div className="pt"><h2 className="ptt">Habitaciones & Tarifario</h2><div className="ptr"><button className="ba" onClick={()=>setModal({t:"addRoom"})}>+ Habitación</button><button className="bc bsm" onClick={()=>setShowTypes(!showTypes)}>{showTypes?"Ocultar":"Gestionar"} Tipos ({types.length})</button></div></div>
+      {showTypes&&(<div className="crd" style={{marginBottom:16}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}><h4 style={{fontSize:15,color:"#6B3410",margin:0}}>🏷️ Tipos ({types.length})</h4><button className="ba bsm" onClick={()=>{setEdType("new");setTypeFm({name:"",base:100,high:150,beds15:1,beds2:0});}}>+ Nuevo</button></div>
+        {edType&&(<div style={{background:"#f9f7f4",padding:16,borderRadius:8,marginBottom:12,border:"1px solid #e0dcd6"}}><h4 style={{fontSize:14,marginBottom:10}}>{edType==="new"?"Nuevo Tipo":"Editar"}</h4><div className="fg"><Fld label="Nombre" value={typeFm.name} onChange={v=>setTypeFm({...typeFm,name:v})}/><Fld label="Normal S/" type="number" min={0} value={typeFm.base} onChange={v=>setTypeFm({...typeFm,base:v})}/><Fld label="Alta S/" type="number" min={0} value={typeFm.high} onChange={v=>setTypeFm({...typeFm,high:v})}/><Fld label="Camas 1½" type="number" min={0} value={typeFm.beds15} onChange={v=>setTypeFm({...typeFm,beds15:+v})}/><Fld label="Camas 2P" type="number" min={0} value={typeFm.beds2} onChange={v=>setTypeFm({...typeFm,beds2:+v})}/><div className="fld"><label>Cap.</label><input type="number" value={typeCap} readOnly style={{opacity:.6,background:"#f0f0f0"}}/></div></div><div style={{display:"flex",gap:8,marginTop:12}}><button className="ba bsm" onClick={saveType}>Guardar</button><button className="bc bsm" onClick={()=>setEdType(null)}>Cancelar</button></div></div>)}
+        <div className="tw"><table className="tb"><thead><tr><th>Nombre</th><th>Normal</th><th>Alta</th><th>1½</th><th>2P</th><th>Cap.</th><th>Hab.</th><th></th></tr></thead><tbody>
+          {types.length===0&&<tr><td colSpan={8} className="empty">Sin tipos</td></tr>}
+          {types.map(t=>{const cnt=rooms.filter(r=>r.type===t.id).length;return(<tr key={t.id}><td style={{fontWeight:600}}>{t.name}</td><td>S/ {t.base}</td><td>S/ {t.high}</td><td>{t.beds15||0}</td><td>{t.beds2||0}</td><td>{t.cap}</td><td>{cnt}</td><td className="tact"><button className="ab" onClick={()=>{setEdType(t.id);setTypeFm({name:t.name,base:t.base,high:t.high,beds15:t.beds15||0,beds2:t.beds2||0});}}>✏️</button><button className="ab" onClick={()=>{if(confirm("¿Eliminar \""+t.name+"\"?"))deleteType(t.id);}}>🗑️</button></td></tr>);})}
+        </tbody></table></div>
+      </div>)}
+      <div className="rg">{rooms.slice().sort((a,b)=>a.name.localeCompare(b.name,undefined,{numeric:true})).map(r=>{const t2=types.find(t=>t.id===r.type);return(<div key={r.id} className={"rc"+(sel===r.id?" ac":"")} onClick={()=>{setSel(r.id);sEdTar(false);}}><div className="rn">{r.name}</div><div className="rtl">{t2?.name}</div><div className="rmeta">Piso {r.floor}</div></div>);})}</div>
+      {s&&(<div className="hab-detail"><div className="hab-left">
+        <div className="crd"><h4 style={{fontSize:15,marginBottom:10,color:"#6B3410"}}>📸 Fotos — {s.name}</h4><input type="file" accept="image/*" ref={fr} style={{display:"none"}} onChange={hP}/><div className="phg">{s.photos.map(p2=>(<div key={p2.id} className="pht"><img src={p2.url} alt="" style={{cursor:"pointer"}} onClick={()=>setZoomImg(p2.url)}/><button className="phr" onClick={()=>{const rm=rooms.find(r=>r.id===sel);updateRoom(sel,{...rm,photos:rm.photos.filter(x=>x.id!==p2.id)});}}>×</button></div>))}<div className="pha" onClick={()=>fr.current?.click()}>📷 Subir</div></div></div>
+        <div className="crd"><h4 style={{fontSize:15,marginBottom:10,color:"#6B3410"}}>📝 Observaciones</h4><div style={{display:"flex",gap:8}}><input value={ob} onChange={e=>sOb(e.target.value)} placeholder="Ej: Enchufe suelto..." onKeyDown={e=>e.key==="Enter"&&aO()} style={{flex:1}}/><button className="ba bsm" onClick={aO}>Agregar</button></div><div className="obl">{s.obs.map((o,i)=>(<div key={i} className="obi"><span style={{flex:1}}>{o.text}</span><span style={{fontSize:11,color:"#aaa"}}>{o.date}</span><button className="ab" onClick={()=>{const rm=rooms.find(r=>r.id===sel);updateRoom(sel,{...rm,obs:rm.obs.filter((_,j)=>j!==i)});}}>×</button></div>))}{s.obs.length===0&&<p style={{color:"#aaa",fontSize:13,marginTop:8}}>Sin observaciones</p>}</div></div>
       </div>
-      {s && (
-        <div className="hab-detail">
-          <div className="hab-left">
-            <div className="crd">
-              <h4 style={{ fontSize: 15, marginBottom: 10, color: "#6B3410" }}>📸 Fotos — Hab. {s.name}</h4>
-              <input type="file" accept="image/*" ref={fr} style={{ display: "none" }} onChange={hP} />
-              <div className="phg">
-                {s.photos.map((p2) => (
-                  <div key={p2.id} className="pht"><img src={p2.url} alt="" style={{ cursor: "pointer" }} onClick={() => setZoomImg(p2.url)} /><button className="phr" onClick={() => { const rm = rooms.find((r) => r.id === sel); updateRoom(sel, { ...rm, photos: rm.photos.filter((x) => x.id !== p2.id) }); }}>×</button></div>
-                ))}
-                <div className="pha" onClick={() => fr.current?.click()}>📷 Subir foto</div>
-              </div>
-            </div>
-            <div className="crd">
-              <h4 style={{ fontSize: 15, marginBottom: 10, color: "#6B3410" }}>📝 Observaciones</h4>
-              <div style={{ display: "flex", gap: 8 }}><input value={ob} onChange={(e) => sOb(e.target.value)} placeholder="Ej: Enchufe suelto..." onKeyDown={(e) => e.key === "Enter" && aO()} style={{ flex: 1 }} /><button className="ba bsm" onClick={aO}>Agregar</button></div>
-              <div className="obl">
-                {s.obs.map((o, i) => (
-                  <div key={i} className="obi"><span style={{ flex: 1 }}>{o.text}</span><span style={{ fontSize: 11, color: "#aaa" }}>{o.date}</span><button className="ab" onClick={() => { const rm = rooms.find((r) => r.id === sel); updateRoom(sel, { ...rm, obs: rm.obs.filter((_, j) => j !== i) }); }}>×</button></div>
-                ))}
-                {s.obs.length === 0 && <p style={{ color: "#aaa", fontSize: 13, marginTop: 8 }}>Sin observaciones</p>}
-              </div>
-            </div>
-          </div>
-          <div className="hab-right">
-            <div className="crd">
-              <h4 style={{ fontSize: 15, marginBottom: 10, color: "#6B3410" }}>💰 Tarifa — {tp?.name}</h4>
-              {edTar ? (
-                <div>
-                  <div className="fg">
-                    <Fld label="Nombre" value={tarFm.name} onChange={(v) => sTarFm({ ...tarFm, name: v })} />
-                    <Fld label="Normal S/" type="number" value={tarFm.base} onChange={(v) => sTarFm({ ...tarFm, base: v })} />
-                    <Fld label="Alta S/" type="number" value={tarFm.high} onChange={(v) => sTarFm({ ...tarFm, high: v })} />
-                    <Fld label="Camas plaza y media" type="number" min={0} value={tarFm.beds15} onChange={(v) => sTarFm({ ...tarFm, beds15: +v })} />
-                    <Fld label="Camas dos plazas" type="number" min={0} value={tarFm.beds2} onChange={(v) => sTarFm({ ...tarFm, beds2: +v })} />
-                    <div className="fld"><label>Capacidad (auto)</label><input type="number" value={(tarFm.beds15 || 0) + 2 * (tarFm.beds2 || 0)} readOnly style={{ opacity: 0.6, background: "#f0f0f0" }} /></div>
-                  </div>
-                  <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-                    <button className="ba bsm" onClick={() => { const cap = (+tarFm.beds15 || 0) + 2 * (+tarFm.beds2 || 0); updateType(tp.id, { ...tp, name: tarFm.name, base: +tarFm.base, high: +tarFm.high, beds15: +tarFm.beds15, beds2: +tarFm.beds2, cap }); sEdTar(false); }}>Guardar</button>
-                    <button className="bc bsm" onClick={() => sEdTar(false)}>Cancelar</button>
-                  </div>
-                </div>
-              ) : (
-                <div>
-                  <div className="tp-row">
-                    <div className="tp-n"><div className="tp-l">Normal</div><div className="tp-v">S/{tp?.base}</div><div className="tp-s">por noche</div></div>
-                    <div className="tp-h"><div className="tp-l">Alta demanda</div><div className="tp-v">S/{tp?.high}</div><div className="tp-s">por noche</div></div>
-                  </div>
-                  <div style={{ fontSize: 12, color: "#888", marginTop: 8 }}>
-                    <p>🛏️ Camas plaza y media: <strong>{tp?.beds15 || 0}</strong> · Camas dos plazas: <strong>{tp?.beds2 || 0}</strong></p>
-                    <p>Capacidad: <strong>{tp?.cap}</strong> persona{tp?.cap > 1 ? "s" : ""}</p>
-                  </div>
-                  <button className="btn-et" onClick={() => { sEdTar(true); sTarFm({ ...tp }); }}>✏️ Editar tarifa del tipo (afecta todas las hab. {tp?.name})</button>
-                </div>
-              )}
-            </div>
-            <div className="crd">
-              <h4 style={{ fontSize: 15, marginBottom: 10, color: "#6B3410" }}>ℹ️ Información</h4>
-              <p style={{ fontSize: 13 }}>Hab. <strong>{s.name}</strong> — Piso {s.floor} — {tp?.name}</p>
-              <div className="fld" style={{ marginTop: 10 }}>
-                <label>Tipo de habitación</label>
-                <select value={s.type} onChange={(e) => { updateRoom(sel, { ...s, type: e.target.value }); }}>
-                  {types.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-                </select>
-              </div>
-              <button className="bd bsm" style={{ marginTop: 12 }} onClick={() => { if (confirm("¿Eliminar habitación " + s.name + "?")) { deleteRoom(sel); setSel(null); } }}>🗑️ Eliminar</button>
-            </div>
-          </div>
-        </div>
-      )}
-      {/* IMAGE ZOOM OVERLAY */}
-      {zoomImg && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.7)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 2000, cursor: "pointer" }} onClick={() => setZoomImg(null)}>
-          <img src={zoomImg} alt="" style={{ maxWidth: "75vw", maxHeight: "75vh", objectFit: "contain", borderRadius: 8, boxShadow: "0 8px 40px rgba(0,0,0,.5)" }} />
-          <button style={{ position: "absolute", top: 20, right: 20, background: "rgba(255,255,255,.9)", border: "none", borderRadius: "50%", width: 36, height: 36, fontSize: 20, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 2px 8px rgba(0,0,0,.3)" }} onClick={() => setZoomImg(null)}>×</button>
-        </div>
-      )}
+      <div className="hab-right"><div className="crd">
+        <h4 style={{fontSize:15,marginBottom:10,color:"#6B3410"}}>🏷️ Tipo & Tarifa — {s.name}</h4>
+        <div className="fld" style={{marginBottom:10}}><label>Tipo</label><select value={s.type} onChange={e=>updateRoom(sel,{...s,type:e.target.value})}>{types.map(t=><option key={t.id} value={t.id}>{t.name}</option>)}</select></div>
+        {edTar?(<div><p style={{fontSize:11,color:"#e67e22",marginBottom:8}}>⚠️ Editar tipo "{tp?.name}" afecta todas sus hab.</p><div className="fg"><Fld label="Nombre" value={tarFm.name} onChange={v=>sTarFm({...tarFm,name:v})}/><Fld label="Normal S/" type="number" value={tarFm.base} onChange={v=>sTarFm({...tarFm,base:v})}/><Fld label="Alta S/" type="number" value={tarFm.high} onChange={v=>sTarFm({...tarFm,high:v})}/><Fld label="Camas 1½" type="number" min={0} value={tarFm.beds15} onChange={v=>sTarFm({...tarFm,beds15:+v})}/><Fld label="Camas 2P" type="number" min={0} value={tarFm.beds2} onChange={v=>sTarFm({...tarFm,beds2:+v})}/><div className="fld"><label>Cap.</label><input type="number" value={(tarFm.beds15||0)+2*(tarFm.beds2||0)} readOnly style={{opacity:.6,background:"#f0f0f0"}}/></div></div><div style={{display:"flex",gap:8,marginTop:10}}><button className="ba bsm" onClick={()=>{const cap=(+tarFm.beds15||0)+2*(+tarFm.beds2||0);updateType(tp.id,{...tp,name:tarFm.name,base:+tarFm.base,high:+tarFm.high,beds15:+tarFm.beds15,beds2:+tarFm.beds2,cap});sEdTar(false);}}>Guardar</button><button className="bc bsm" onClick={()=>sEdTar(false)}>Cancelar</button></div></div>):(
+          <div><div className="tp-row"><div className="tp-n"><div className="tp-l">Normal</div><div className="tp-v">S/{tp?.base}</div><div className="tp-s">por noche</div></div><div className="tp-h"><div className="tp-l">Alta</div><div className="tp-v">S/{tp?.high}</div><div className="tp-s">por noche</div></div></div><div style={{fontSize:12,color:"#888",marginTop:8}}><p>🛏️ 1½: <strong>{tp?.beds15||0}</strong> · 2P: <strong>{tp?.beds2||0}</strong> · Cap: <strong>{tp?.cap}</strong></p></div><button className="btn-et" onClick={()=>{sEdTar(true);sTarFm({...tp});}}>✏️ Editar tarifa</button></div>
+        )}
+        <div style={{borderTop:"1px solid var(--bd)",marginTop:12,paddingTop:12}}><p style={{fontSize:12,color:"#666"}}>Hab. <strong>{s.name}</strong> — Piso {s.floor}</p><button className="bd bsm" style={{marginTop:8}} onClick={()=>{if(confirm("¿Eliminar "+s.name+"?")){deleteRoom(sel);setSel(null);}}}>🗑️ Eliminar</button></div>
+      </div></div></div>)}
+      {zoomImg&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.7)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:2000,cursor:"pointer"}} onClick={()=>setZoomImg(null)}><img src={zoomImg} alt="" style={{maxWidth:"75vw",maxHeight:"75vh",objectFit:"contain",borderRadius:8}}/><button style={{position:"absolute",top:20,right:20,background:"rgba(255,255,255,.9)",border:"none",borderRadius:"50%",width:36,height:36,fontSize:20,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}} onClick={()=>setZoomImg(null)}>×</button></div>}
     </div>
   );
 }
 
 function MdlAddRm({ types, onSave, onClose }) {
   const [f, sF] = useState({ id: "", name: "", type: types[0]?.id || "", floor: 1 });
-  return (
-    <div className="mbg" onClick={onClose}>
-      <div className="mdl ms" onClick={(e) => e.stopPropagation()}>
-        <h3>Agregar Habitación</h3>
-        <div className="fg">
-          <Fld label="Número" value={f.id} onChange={(v) => sF({ ...f, id: v, name: v })} />
-          <Fld label="Tipo" type="select" opts={types.map((t) => ({ v: t.id, l: t.name }))} value={f.type} onChange={(v) => sF({ ...f, type: v })} />
-          <Fld label="Piso" type="number" min={1} value={f.floor} onChange={(v) => sF({ ...f, floor: +v })} />
-        </div>
-        <div className="mf"><button className="bc" onClick={onClose}>Cancelar</button><button className="ba" onClick={() => { if (!f.id) return alert("Ingresa número"); onSave(f); }}>Agregar</button></div>
-      </div>
-    </div>
-  );
+  return (<div className="mbg" onClick={onClose}><div className="mdl ms" onClick={e=>e.stopPropagation()}><h3>Agregar Habitación</h3><div className="fg"><Fld label="Número" value={f.id} onChange={v=>sF({...f,id:v,name:v})}/><Fld label="Tipo" type="select" opts={types.map(t=>({v:t.id,l:t.name}))} value={f.type} onChange={v=>sF({...f,type:v})}/><Fld label="Piso" type="number" min={1} value={f.floor} onChange={v=>sF({...f,floor:+v})}/></div><div className="mf"><button className="bc" onClick={onClose}>Cancelar</button><button className="ba" onClick={()=>{if(!f.id)return alert("Ingresa número");onSave(f);}}>Agregar</button></div></div></div>);
 }
 
-/* ═══ LIMPIEZA ═══
-   - Parcial: days between checkin+1 and checkout-1
-   - General: checkout day from 6am
-   - Limpio: after staff marks it clean
-   - "Verificar": rooms whose checkin is TODAY (just arrived)
-*/
-function PgLim({ rooms, types, res, cln, markCleaningDone, curUser }) {
-  const [rn, sRn] = useState({});
-  const getRn = (key) => rn[key] || "";
-  const setRn = (key, val) => sRn((p) => ({ ...p, [key]: val }));
+/* PgLim - Limpieza + Toallas */
+function PgLim({ rooms, types, res, cln, markCleaningDone, curUser, users }) {
+  const AUTH_NAMES = ["ivanaberrocal","dafnaberrocal","marianelatinoco"];
+  const [rn, sRn] = useState({}); const getRn = (k) => rn[k]||""; const setRn = (k,v) => sRn(p=>({...p,[k]:v}));
+  const [towelData, setTowelData] = useState(() => loadTowelData() || { stock: 0, verified: false, verifiedBy: "", deliveries: [] });
+  const [tAuthM, setTAuthM] = useState(false); const [tAuthU, setTAuthU] = useState(""); const [tAuthP, setTAuthP] = useState(""); const [tAuthE, setTAuthE] = useState("");
+  const [newDel, setNewDel] = useState({ roomId: "", qty: "" });
+  useEffect(() => { saveTowelData(towelData); }, [towelData]);
 
-  // Rooms needing cleaning (parcial or general)
   const cleanList = useMemo(() => {
-    const result = [];
-    const hr = new Date().getHours();
-    for (const room of rooms) {
-      for (const r of res) {
-        if (r.roomId !== room.id || (r.state !== "Hospedado" && r.state !== "Reservado")) continue;
-        const ci = toDS(r.checkin);
-        const co = toDS(r.checkout);
-        let status = null;
-        if (TODAY > ci && TODAY < co) status = "parcial";
-        if (TODAY === co && hr >= 6) status = "general";
-        if (TODAY === co && hr < 6) status = "parcial";
-        if (status) result.push({ room, res: r, status, type: types.find((t) => t.id === room.type) });
-      }
-    }
+    const result = []; const hr = new Date().getHours();
+    for (const room of rooms) { for (const r of res) {
+      if (r.roomId !== room.id || (r.state !== "Hospedado" && r.state !== "Reservado")) continue;
+      const ci = toDS(r.checkin), co = toDS(r.checkout); let status = null;
+      if (TODAY > ci && TODAY < co) status = "parcial";
+      if (TODAY === co && hr >= 6) status = "general";
+      if (TODAY === co && hr < 6) status = "parcial";
+      if (status) result.push({ room, res: r, status, type: types.find(t => t.id === room.type) });
+    }}
     return result;
   }, [rooms, res, types]);
 
-  // Rooms arriving today (checkin today) — verify section
   const verifyList = useMemo(() => {
     const result = [];
-    for (const room of rooms) {
-      for (const r of res) {
-        if (r.roomId !== room.id || (r.state !== "Hospedado" && r.state !== "Reservado")) continue;
-        if (toDS(r.checkin) === TODAY) result.push({ room, res: r, type: types.find((t) => t.id === room.type) });
-      }
-    }
+    for (const room of rooms) { for (const r of res) {
+      if (r.roomId !== room.id || (r.state !== "Hospedado" && r.state !== "Reservado")) continue;
+      if (toDS(r.checkin) === TODAY) result.push({ room, res: r, type: types.find(t => t.id === room.type) });
+    }}
     return result;
   }, [rooms, res, types]);
 
-  const getEff = (roomId, autoStatus) => {
-    const ov = cln[roomId];
-    if (ov && ov.status === "limpio" && toDS(ov.at) === TODAY) return { status: "limpio", by: ov.by, user: ov.user || "" };
-    return { status: autoStatus, by: null, user: "" };
-  };
+  const towelNeeds = useMemo(() => {
+    const needs = []; const seen = new Set();
+    for (const cl of cleanList) { if (cl.status === "parcial") { needs.push({ roomId: cl.room.id, roomName: cl.room.name, persons: Number(cl.res.persons)||1, reason: "Limpieza parcial", guest: cl.res.guest }); seen.add(cl.room.id); } }
+    for (const v of verifyList) { if (!seen.has(v.room.id)) { needs.push({ roomId: v.room.id, roomName: v.room.name, persons: Number(v.res.persons)||1, reason: "Ingreso hoy", guest: v.res.guest }); } }
+    return needs;
+  }, [cleanList, verifyList]);
 
-  const markClean = (roomId) => {
-    const name = getRn("c_" + roomId).trim();
-    if (!name) return alert("Ingresa el nombre del responsable");
-    markCleaningDone(roomId, roomId, name, curUser.name);
-    setRn("c_" + roomId, "");
-  };
+  const towelAlerts = useMemo(() => {
+    return towelNeeds.map(n => {
+      const del = towelData.deliveries.filter(d => d.roomId === n.roomId).reduce((s, d) => s + d.qty, 0);
+      const missing = n.persons - del;
+      return { ...n, delivered: del, missing };
+    }).filter(a => a.missing > 0);
+  }, [towelNeeds, towelData.deliveries]);
 
-  const markVerify = (roomId) => {
-    const name = getRn("v_" + roomId).trim();
-    if (!name) return alert("Ingresa el nombre del responsable de verificar");
-    markCleaningDone(roomId + "_verify", roomId, name, curUser.name);
-    setRn("v_" + roomId, "");
-  };
-
-  const stInfo = {
-    limpio: { label: "Limpio", color: "#27ae60", icon: "🟢" },
-    parcial: { label: "Limpieza Parcial", color: "#e67e22", icon: "🟠" },
-    general: { label: "Limpieza General", color: "#3498db", icon: "🔵" },
-  };
+  const totalDel = towelData.deliveries.reduce((s, d) => s + d.qty, 0);
+  const getEff = (roomId, autoSt) => { const ov = cln[roomId]; if (ov && ov.status === "limpio" && toDS(ov.at) === TODAY) return { status: "limpio", by: ov.by, user: ov.user||"" }; return { status: autoSt, by: null, user: "" }; };
+  const markClean = (roomId) => { const name = getRn("c_"+roomId).trim(); if (!name) return alert("Nombre requerido"); markCleaningDone(roomId, roomId, name, curUser.name); setRn("c_"+roomId, ""); };
+  const markVerify = (roomId) => { const name = getRn("v_"+roomId).trim(); if (!name) return alert("Nombre requerido"); markCleaningDone(roomId+"_verify", roomId, name, curUser.name); setRn("v_"+roomId, ""); };
+  const stInfo = { limpio: { label: "Limpio", color: "#27ae60", icon: "🟢" }, parcial: { label: "Parcial", color: "#e67e22", icon: "🟠" }, general: { label: "General", color: "#3498db", icon: "🔵" } };
+  const confirmTowelAuth = () => { const found = (users||[]).find(x => AUTH_NAMES.includes(x.user) && x.user === tAuthU && x.pass === tAuthP); if (!found) { setTAuthE("No autorizado"); return; } setTowelData(p => ({ ...p, verified: true, verifiedBy: found.name })); setTAuthM(false); };
+  const addDelivery = () => { const qty = Number(newDel.qty); if (!newDel.roomId || !qty || qty <= 0) return alert("Completa los campos"); setTowelData(p => ({ ...p, deliveries: [...p.deliveries, { roomId: newDel.roomId, qty, time: new Date().toLocaleTimeString("es-PE", { hour: "2-digit", minute: "2-digit" }) }] })); setNewDel({ roomId: "", qty: "" }); };
+  const rmDelivery = (i) => setTowelData(p => ({ ...p, deliveries: p.deliveries.filter((_, j) => j !== i) }));
 
   return (
     <div className="fi">
       <div className="pt"><h2 className="ptt">Control de Limpieza</h2></div>
-      <div className="sr">
-        {Object.entries(stInfo).map(([k, v]) => {
-          const c = cleanList.filter((cr) => getEff(cr.room.id, cr.status).status === k).length;
-          return <div key={k} className="sc"><div className="sn">{c}</div><div className="sl">{v.icon} {v.label}</div></div>;
-        })}
-      </div>
-      <div className="lr">
-        <span className="li"><span className="ld" style={{ background: "#e67e22" }} />Parcial (no cambiar sábanas)</span>
-        <span className="li"><span className="ld" style={{ background: "#3498db" }} />General (cambiar sábanas)</span>
-        <span className="li"><span className="ld" style={{ background: "#27ae60" }} />Limpio</span>
-      </div>
+      <div className="sr">{Object.entries(stInfo).map(([k, v]) => { const c = cleanList.filter(cr => getEff(cr.room.id, cr.status).status === k).length; return <div key={k} className="sc"><div className="sn">{c}</div><div className="sl">{v.icon} {v.label}</div></div>; })}</div>
+      <div className="lr"><span className="li"><span className="ld" style={{background:"#e67e22"}}/>Parcial</span><span className="li"><span className="ld" style={{background:"#3498db"}}/>General</span><span className="li"><span className="ld" style={{background:"#27ae60"}}/>Limpio</span></div>
 
-      {/* Main cleaning table */}
-      {cleanList.length === 0 ? (
-        <div className="crd" style={{ textAlign: "center", padding: 40, color: "#999" }}>No hay habitaciones que requieran limpieza hoy</div>
-      ) : (
-        <div className="tw">
-          <table className="tb">
-            <thead><tr><th>Hab.</th><th>Tipo</th><th>Huésped</th><th>Check-out</th><th>Estado</th><th>Responsable</th><th>Acción</th></tr></thead>
-            <tbody>
-              {cleanList.map(({ room, res: rv, status, type: tp }) => {
-                const eff = getEff(room.id, status);
-                const inf = stInfo[eff.status];
-                return (
-                  <tr key={room.id}>
-                    <td className="trm">{room.name}</td>
-                    <td>{tp?.name}</td>
-                    <td className="tgst">{rv.guest}</td>
-                    <td>{fmtDT(rv.checkout)}</td>
-                    <td><span className="lim-badge" style={{ background: inf.color + "22", color: inf.color, borderColor: inf.color + "44" }}>{inf.icon} {inf.label}</span></td>
-                    <td style={{ fontSize: 12 }}>{eff.by ? <span>✅ {eff.by} <span style={{ color: "#aaa", fontSize: 10 }}>(reg: {eff.user || curUser.name})</span></span> : "—"}</td>
-                    <td>
-                      {eff.status !== "limpio" ? (
-                        <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-                          <input style={{ width: 110, fontSize: 11, padding: "4px 8px" }} placeholder="Responsable..." value={getRn("c_" + room.id)} onChange={(e) => setRn("c_" + room.id, e.target.value)} onKeyDown={(e) => e.key === "Enter" && markClean(room.id)} />
-                          <button className="ba bsm" onClick={() => markClean(room.id)}>✓ Limpio</button>
-                        </div>
-                      ) : <span style={{ color: "#27ae60", fontWeight: 600, fontSize: 12 }}>✅ Listo</span>}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+      {cleanList.length===0?<div className="crd" style={{textAlign:"center",padding:40,color:"#999"}}>No hay limpieza hoy</div>:(
+        <div className="tw"><table className="tb"><thead><tr><th>Hab.</th><th>Tipo</th><th>Huésped</th><th>Check-out</th><th>Estado</th><th>Resp.</th><th>Acción</th></tr></thead><tbody>
+          {cleanList.map(({room,res:rv,status,type:tp2})=>{const eff=getEff(room.id,status);const inf=stInfo[eff.status];return(
+            <tr key={room.id}><td className="trm">{room.name}</td><td>{tp2?.name}</td><td className="tgst">{rv.guest}</td><td>{fmtDT(rv.checkout)}</td><td><span className="lim-badge" style={{background:inf.color+"22",color:inf.color,borderColor:inf.color+"44"}}>{inf.icon} {inf.label}</span></td><td style={{fontSize:12}}>{eff.by?<span>✅ {eff.by}</span>:"—"}</td><td>{eff.status!=="limpio"?(<div style={{display:"flex",gap:4,alignItems:"center"}}><input style={{width:100,fontSize:11,padding:"4px 6px"}} placeholder="Responsable..." value={getRn("c_"+room.id)} onChange={e=>setRn("c_"+room.id,e.target.value)} onKeyDown={e=>e.key==="Enter"&&markClean(room.id)}/><button className="ba bsm" onClick={()=>markClean(room.id)}>✓</button></div>):<span style={{color:"#27ae60",fontWeight:600,fontSize:12}}>✅</span>}</td></tr>
+          );})}
+        </tbody></table></div>
       )}
 
-      {/* Verify: rooms checking in today */}
-      {verifyList.length > 0 && (
-        <div className="crd" style={{ marginTop: 20 }}>
-          <h3 style={{ fontSize: 15, marginBottom: 12, color: "#6B3410" }}>🔍 Verificar estado de limpieza — Ingresos de hoy</h3>
-          <p style={{ fontSize: 12, color: "#888", marginBottom: 12 }}>Estas habitaciones se ocupan hoy. Verifica que estén listas para el huésped.</p>
-          <div className="tw">
-            <table className="tb">
-              <thead><tr><th>Hab.</th><th>Tipo</th><th>Huésped</th><th>Check-in</th><th>Estado</th><th>Responsable</th><th>Acción</th></tr></thead>
-              <tbody>
-                {verifyList.map(({ room, res: rv, type: tp }) => {
-                  const ov = cln[room.id + "_verify"];
-                  const isClean = ov && ov.status === "limpio" && toDS(ov.at) === TODAY;
-                  return (
-                    <tr key={room.id}>
-                      <td className="trm">{room.name}</td>
-                      <td>{tp?.name}</td>
-                      <td className="tgst">{rv.guest}</td>
-                      <td>{fmtDT(rv.checkin)}</td>
-                      <td>
-                        {isClean
-                          ? <span style={{ color: "#27ae60", fontWeight: 600, fontSize: 12 }}>🟢 Verificado</span>
-                          : <span style={{ color: "#e67e22", fontWeight: 600, fontSize: 12 }}>⚠️ Pendiente</span>
-                        }
-                      </td>
-                      <td style={{ fontSize: 12 }}>{isClean ? <span>✅ {ov.by}</span> : "—"}</td>
-                      <td>
-                        {!isClean ? (
-                          <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-                            <input style={{ width: 110, fontSize: 11, padding: "4px 8px" }} placeholder="Responsable..." value={getRn("v_" + room.id)} onChange={(e) => setRn("v_" + room.id, e.target.value)} onKeyDown={(e) => e.key === "Enter" && markVerify(room.id)} />
-                            <button className="ba bsm" onClick={() => markVerify(room.id)}>✓ Limpio</button>
-                          </div>
-                        ) : <span style={{ color: "#27ae60", fontWeight: 600, fontSize: 12 }}>✅ Listo</span>}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+      {verifyList.length>0&&(<div className="crd" style={{marginTop:20}}>
+        <h3 style={{fontSize:15,marginBottom:12,color:"#6B3410"}}>🔍 Verificar — Ingresos hoy</h3>
+        <div className="tw"><table className="tb"><thead><tr><th>Hab.</th><th>Tipo</th><th>Huésped</th><th>Check-in</th><th>Estado</th><th>Resp.</th><th>Acción</th></tr></thead><tbody>
+          {verifyList.map(({room,res:rv,type:tp2})=>{const ov=cln[room.id+"_verify"];const ok=ov&&ov.status==="limpio"&&toDS(ov.at)===TODAY;return(
+            <tr key={room.id}><td className="trm">{room.name}</td><td>{tp2?.name}</td><td className="tgst">{rv.guest}</td><td>{fmtDT(rv.checkin)}</td><td>{ok?<span style={{color:"#27ae60",fontWeight:600,fontSize:12}}>🟢 OK</span>:<span style={{color:"#e67e22",fontWeight:600,fontSize:12}}>⚠️ Pendiente</span>}</td><td style={{fontSize:12}}>{ok?<span>✅ {ov.by}</span>:"—"}</td><td>{!ok?(<div style={{display:"flex",gap:4,alignItems:"center"}}><input style={{width:100,fontSize:11,padding:"4px 6px"}} placeholder="Responsable..." value={getRn("v_"+room.id)} onChange={e=>setRn("v_"+room.id,e.target.value)} onKeyDown={e=>e.key==="Enter"&&markVerify(room.id)}/><button className="ba bsm" onClick={()=>markVerify(room.id)}>✓</button></div>):<span style={{color:"#27ae60",fontWeight:600,fontSize:12}}>✅</span>}</td></tr>
+          );})}
+        </tbody></table></div>
+      </div>)}
+
+      {/* TOALLAS */}
+      <div className="crd" style={{marginTop:20}}>
+        <h3 style={{fontSize:15,marginBottom:12,color:"#6B3410"}}>🧺 Inventario de Toallas — Hoy</h3>
+        <div style={{background:towelData.verified?"#e8f5e9":"#fff8e1",padding:12,borderRadius:8,border:"1px solid "+(towelData.verified?"#a5d6a7":"#ffe082"),marginBottom:12}}>
+          <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap"}}>
+            <span style={{fontSize:13,fontWeight:600}}>Stock inicial:</span>
+            {towelData.verified?<span style={{fontSize:18,fontWeight:700,color:"#2e7d32"}}>{towelData.stock} toallas ✅ <span style={{fontSize:11,fontWeight:400}}>por {towelData.verifiedBy}</span></span>:(
+              <><input type="number" min={0} value={towelData.stock} onChange={e=>setTowelData(p=>({...p,stock:Number(e.target.value)||0}))} style={{width:80}}/><button className="ba bsm" onClick={()=>{setTAuthM(true);setTAuthU("");setTAuthP("");setTAuthE("");}}>🔐 Validar</button></>
+            )}
           </div>
+          {towelData.verified&&<p style={{fontSize:11,color:"#666",marginTop:4}}>Entregadas: {totalDel} · Restantes: {towelData.stock-totalDel}</p>}
         </div>
-      )}
+        {towelData.verified&&(<>
+          <h4 style={{fontSize:13,fontWeight:700,marginBottom:8}}>📦 Toallas Entregadas</h4>
+          <div style={{display:"flex",gap:8,marginBottom:10,flexWrap:"wrap",alignItems:"flex-end"}}>
+            <div className="fld" style={{width:120}}><label>Hab.</label><select value={newDel.roomId} onChange={e=>setNewDel(p=>({...p,roomId:e.target.value}))}><option value="">—</option>{rooms.slice().sort((a,b)=>a.name.localeCompare(b.name,undefined,{numeric:true})).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select></div>
+            <div className="fld" style={{width:80}}><label>Cant.</label><input type="number" min={1} value={newDel.qty} onChange={e=>setNewDel(p=>({...p,qty:e.target.value}))}/></div>
+            <button className="ba bsm" onClick={addDelivery}>+ Entregar</button>
+          </div>
+          {towelData.deliveries.length>0&&(<div className="tw" style={{marginBottom:12}}><table className="tb"><thead><tr><th>Hab.</th><th>Cant.</th><th>Hora</th><th></th></tr></thead><tbody>{towelData.deliveries.map((d,i)=>(<tr key={i}><td className="trm">{d.roomId}</td><td>{d.qty}</td><td style={{fontSize:11}}>{d.time}</td><td><button className="ab" onClick={()=>rmDelivery(i)}>🗑️</button></td></tr>))}</tbody></table></div>)}
+          {towelData.deliveries.length===0&&<p style={{fontSize:12,color:"#999",marginBottom:12}}>Sin entregas aún</p>}
+          <div style={{background:towelAlerts.length>0?"#fde8e5":"#e8f5e9",padding:12,borderRadius:8,border:"1px solid "+(towelAlerts.length>0?"#f5c6cb":"#a5d6a7")}}>
+            <h4 style={{fontSize:13,fontWeight:700,color:towelAlerts.length>0?"#c0392b":"#2e7d32",marginBottom:8}}>{towelAlerts.length>0?`⚠️ Faltan toallas en ${towelAlerts.length} hab.`:"✅ Toallas completas"}</h4>
+            {towelAlerts.map((a,i)=>(<div key={i} style={{display:"flex",gap:8,alignItems:"center",padding:"4px 0",flexWrap:"wrap",fontSize:12}}><strong style={{color:"#c0392b"}}>{a.roomName}</strong><span>{a.guest} ({a.reason})</span><span>Necesita: {a.persons} · Entregadas: {a.delivered}</span><span style={{color:"#c0392b",fontWeight:700}}>Faltan: {a.missing}</span></div>))}
+            {towelAlerts.length===0&&towelNeeds.length>0&&<div style={{fontSize:12,color:"#2e7d32"}}>{towelNeeds.map((n,i)=>(<div key={i}>✅ {n.roomName} — {n.guest} — {n.persons} toalla{n.persons>1?"s":""}</div>))}</div>}
+            {towelNeeds.length===0&&<p style={{fontSize:12,color:"#888"}}>No hay hab. que requieran toallas hoy</p>}
+          </div>
+        </>)}
+      </div>
+      {tAuthM&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.6)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:2000,padding:16}}><div style={{background:"#fff",padding:24,borderRadius:12,width:"100%",maxWidth:340}} onClick={e=>e.stopPropagation()}><h4 style={{fontSize:14,color:"#6B3410"}}>🔐 Validar Stock</h4><p style={{fontSize:11,color:"#888",marginBottom:12}}>Solo autorizados</p><div className="fld"><label>Usuario</label><input value={tAuthU} onChange={e=>{setTAuthU(e.target.value);setTAuthE("");}} placeholder="usuario" autoComplete="off"/></div><div className="fld" style={{marginTop:8}}><label>Contraseña</label><input type="password" value={tAuthP} onChange={e=>{setTAuthP(e.target.value);setTAuthE("");}} placeholder="contraseña" onKeyDown={e=>e.key==="Enter"&&confirmTowelAuth()} autoComplete="off"/></div>{tAuthE&&<p style={{color:"#c0392b",fontSize:11,marginTop:6}}>{tAuthE}</p>}<div style={{display:"flex",gap:8,marginTop:14}}><button className="ba bsm" onClick={confirmTowelAuth}>Confirmar</button><button className="bc bsm" onClick={()=>setTAuthM(false)}>Cancelar</button></div></div></div>}
     </div>
   );
 }
 
-/* ═══ AVISOS — Conflict Detection ═══ */
-function PgAvisos({ conflicts, rooms, types, setModal, setPg }) {
+/* PgAvisos - Conflicts + Notes */
+function PgAvisos({ conflicts, rooms, types, setModal, setPg, curUser }) {
+  const [notes, setNotes] = useState(() => loadNotes());
+  const [newNote, setNewNote] = useState("");
+  const [editIdx, setEditIdx] = useState(null);
+  const [editText, setEditText] = useState("");
+  useEffect(() => { saveNotes(notes); }, [notes]);
+
+  const addNote = () => { if (!newNote.trim()) return; setNotes(p => [{ text: newNote.trim(), done: false, by: curUser.name, time: new Date().toLocaleTimeString("es-PE", { hour: "2-digit", minute: "2-digit" }), date: TODAY }, ...p]); setNewNote(""); };
+  const toggleNote = (i) => setNotes(p => p.map((n, j) => j === i ? { ...n, done: !n.done } : n));
+  const deleteNote = (i) => setNotes(p => p.filter((_, j) => j !== i));
+  const startEdit = (i) => { setEditIdx(i); setEditText(notes[i].text); };
+  const saveEdit = () => { if (!editText.trim()) return; setNotes(p => p.map((n, j) => j === editIdx ? { ...n, text: editText.trim() } : n)); setEditIdx(null); };
+
   return (
     <div className="fi">
-      <div className="pt"><h2 className="ptt">⚠️ Avisos e Interferencias</h2></div>
+      <div className="pt"><h2 className="ptt">⚠️ Avisos</h2></div>
+
+      {/* NOTES SECTION */}
+      <div className="crd" style={{ marginBottom: 20 }}>
+        <h3 style={{ fontSize: 15, marginBottom: 12, color: "#6B3410" }}>📝 Anotaciones del Día</h3>
+        <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+          <input value={newNote} onChange={e => setNewNote(e.target.value)} placeholder="Ej: Cuarto 212 pidió agua hervida..." onKeyDown={e => e.key === "Enter" && addNote()} style={{ flex: 1 }} />
+          <button className="ba bsm" onClick={addNote}>+ Agregar</button>
+        </div>
+        {notes.length === 0 && <p style={{ color: "#999", fontSize: 13, textAlign: "center", padding: 16 }}>Sin anotaciones</p>}
+        {notes.map((n, i) => (
+          <div key={i} className="note-item" style={{ display: "flex", gap: 8, alignItems: "flex-start", padding: "8px 10px", background: n.done ? "#f0f0f0" : "#f9f7f4", borderRadius: 8, marginBottom: 6, border: "1px solid #e8e4de" }}>
+            <button onClick={() => toggleNote(i)} style={{ background: "none", border: n.done ? "2px solid #27ae60" : "2px solid #ccc", borderRadius: 4, width: 22, height: 22, minWidth: 22, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", marginTop: 2, fontSize: 12, color: "#27ae60" }}>
+              {n.done ? "✓" : ""}
+            </button>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              {editIdx === i ? (
+                <div style={{ display: "flex", gap: 6 }}>
+                  <input value={editText} onChange={e => setEditText(e.target.value)} onKeyDown={e => e.key === "Enter" && saveEdit()} style={{ flex: 1, fontSize: 13 }} />
+                  <button className="ba bsm" onClick={saveEdit}>✓</button>
+                  <button className="bc bsm" onClick={() => setEditIdx(null)}>×</button>
+                </div>
+              ) : (
+                <span style={{ fontSize: 13, textDecoration: n.done ? "line-through" : "none", color: n.done ? "#999" : "var(--tx)", wordBreak: "break-word" }}>{n.text}</span>
+              )}
+              <div style={{ fontSize: 10, color: "#aaa", marginTop: 2 }}>{n.by} · {n.time} · {n.date}</div>
+            </div>
+            {editIdx !== i && (
+              <div style={{ display: "flex", gap: 2 }}>
+                <button className="ab" style={{ fontSize: 13 }} onClick={() => startEdit(i)}>✏️</button>
+                <button className="ab" style={{ fontSize: 13 }} onClick={() => deleteNote(i)}>🗑️</button>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {/* CONFLICTS */}
+      <h3 style={{ fontSize: 15, marginBottom: 12, color: "#6B3410" }}>🔴 Interferencias de Reservas</h3>
       {conflicts.length === 0 ? (
-        <div className="crd" style={{ textAlign: "center", padding: 40 }}>
-          <span style={{ fontSize: 48, display: "block", marginBottom: 12 }}>✅</span>
-          <p style={{ fontSize: 16, fontWeight: 600, color: "#27ae60" }}>No hay interferencias detectadas</p>
-          <p style={{ fontSize: 13, color: "#888", marginTop: 6 }}>Todas las reservas activas tienen fechas compatibles.</p>
+        <div className="crd" style={{ textAlign: "center", padding: 30 }}>
+          <span style={{ fontSize: 40, display: "block", marginBottom: 8 }}>✅</span>
+          <p style={{ fontSize: 15, fontWeight: 600, color: "#27ae60" }}>Sin interferencias</p>
+          <p style={{ fontSize: 12, color: "#888" }}>Todas las reservas activas son compatibles.</p>
         </div>
       ) : (
         <>
-          <div className="sr">
-            <div className="sc" style={{ borderTopColor: "#c0392b" }}>
-              <div className="sn">{conflicts.length}</div>
-              <div className="sl">⚠️ Interferencias</div>
-            </div>
-          </div>
-          <p style={{ fontSize: 13, color: "#888", marginBottom: 16 }}>
-            Se detectaron reservas activas (Reservado/Hospedado) que se superponen en la misma habitación. Corrige las fechas o cambia de habitación.
-          </p>
+          <div className="sr"><div className="sc" style={{ borderTopColor: "#c0392b" }}><div className="sn">{conflicts.length}</div><div className="sl">⚠️ Interferencias</div></div></div>
           {conflicts.map((c, idx) => {
-            const rm = rooms.find((r) => r.id === c.room);
-            const tp = rm ? types.find((t) => t.id === rm.type) : null;
+            const rm = rooms.find(r => r.id === c.room); const tp2 = rm ? types.find(t => t.id === rm.type) : null;
             return (
               <div key={idx} className="crd" style={{ borderLeft: "4px solid #c0392b", marginBottom: 12 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                  <span style={{ fontSize: 14, fontWeight: 700, color: "#c0392b" }}>⚠️ Interferencia en Hab. {c.room} {tp ? "(" + tp.name + ")" : ""}</span>
-                </div>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                <span style={{ fontSize: 14, fontWeight: 700, color: "#c0392b" }}>⚠️ Hab. {c.room} {tp2 ? "(" + tp2.name + ")" : ""}</span>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 8 }} className="conflict-grid">
                   {[c.a, c.b].map((r, ri) => (
                     <div key={ri} style={{ background: "#fef3e2", padding: 10, borderRadius: 8, border: "1px solid #ffe0b2" }}>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
@@ -1456,14 +623,8 @@ function PgAvisos({ conflicts, rooms, types, setModal, setPg }) {
                         <span className={"badge b-" + r.state.toLowerCase()} style={{ fontSize: 10 }}>{r.state}</span>
                       </div>
                       <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>{r.guest}</div>
-                      <div style={{ fontSize: 12, color: "#555" }}>
-                        <div>📥 Check-in: {fmtDT(r.checkin)}</div>
-                        <div>📤 Check-out: {fmtDT(r.checkout)}</div>
-                      </div>
-                      <div style={{ fontSize: 11, color: "#888", marginTop: 4 }}>
-                        Registrado: {r.created} por {r.createdBy}
-                      </div>
-                      <button className="bc bsm" style={{ marginTop: 8, width: "100%" }} onClick={() => setModal({ t: "res", d: r })}>✏️ Editar reserva</button>
+                      <div style={{ fontSize: 12, color: "#555" }}><div>📥 {fmtDT(r.checkin)}</div><div>📤 {fmtDT(r.checkout)}</div></div>
+                      <button className="bc bsm" style={{ marginTop: 8, width: "100%" }} onClick={() => setModal({ t: "res", d: r })}>✏️ Editar</button>
                     </div>
                   ))}
                 </div>
@@ -1476,7 +637,8 @@ function PgAvisos({ conflicts, rooms, types, setModal, setPg }) {
   );
 }
 
-/* ═══ CSS ═══ */
+
+/* CSS */
 const CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Libre+Baskerville:wght@400;700&family=Source+Sans+3:wght@300;400;500;600;700&display=swap');
 :root{--a:#8B4513;--al:#A0522D;--ad:#6B3410;--hb:#3E2723;--ht:#FAEBD7;--bg:#f7f5f2;--cb:#fff;--tx:#2c2c2c;--ts:#666;--mu:#999;--bd:#e0dcd6;--rd:#c0392b;--rb:#fde8e5;--gn:#27ae60;--gb:#e8f8ee;--or:#e67e22;--ob:#fef3e2;--R:8px;--F:'Source Sans 3',sans-serif;--FD:'Libre Baskerville',Georgia,serif}
@@ -1492,9 +654,7 @@ button{font-family:var(--F);cursor:pointer;border:none;transition:all .15s}
 .login-bg{min-height:100vh;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#3E2723 0%,#5D4037 50%,#3E2723 100%)}
 .login-card{background:var(--cb);border-radius:12px;padding:36px;width:360px;box-shadow:0 12px 48px rgba(0,0,0,.3)}
 .login-header{text-align:center;margin-bottom:24px}.login-header h1{font-family:var(--FD);font-size:22px;color:var(--ad);margin-top:8px}.login-header p{font-size:12px;color:var(--mu)}
-.login-btn{width:100%;margin-top:16px;padding:12px;font-size:14px}
-.login-err{color:var(--rd);font-size:12px;margin-top:8px;text-align:center}
-.login-link{text-align:center;font-size:12px;color:var(--mu);margin-top:12px}.login-link span{color:var(--a);cursor:pointer;font-weight:600}.login-link span:hover{text-decoration:underline}
+.login-btn{width:100%;margin-top:16px;padding:12px;font-size:14px}.login-err{color:var(--rd);font-size:12px;margin-top:8px;text-align:center}
 .hdr{background:var(--hb);color:var(--ht);padding:0 20px;display:flex;align-items:center;justify-content:space-between;min-height:56px;position:sticky;top:0;z-index:100;box-shadow:0 2px 12px rgba(0,0,0,.2)}
 .hdr-l{display:flex;align-items:center;gap:10px}.hdr-ico{font-size:24px}.hdr-t{font-family:var(--FD);font-size:16px;font-weight:700;color:#FAEBD7}.hdr-s{font-size:10px;opacity:.7}
 .hdr-nav{display:flex;gap:2px;flex-wrap:wrap;align-items:center}
@@ -1504,12 +664,12 @@ button{font-family:var(--F);cursor:pointer;border:none;transition:all .15s}
 .hdr-uname{font-size:12px;color:rgba(250,235,215,.8)}.hdr-logout{background:rgba(255,255,255,.1);color:#FAEBD7;padding:4px 10px;border-radius:var(--R);font-size:11px}.hdr-logout:hover{background:rgba(255,255,255,.2)}
 .cnt{max-width:1440px;margin:0 auto;padding:20px 24px 40px}
 .pt{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:12px}
-.ptt{font-family:var(--FD);font-size:20px;color:var(--tx)}.ptr{display:flex;align-items:center;gap:8px}
+.ptt{font-family:var(--FD);font-size:20px;color:var(--tx)}.ptr{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .sb{position:relative}.sb input{padding-left:32px;width:260px}.si{position:absolute;left:10px;top:50%;transform:translateY(-50%);font-size:14px}
-.stats-date-row{display:flex;align-items:center;gap:10px;margin-bottom:10px;padding:8px 12px;background:var(--cb);border:1px solid var(--bd);border-radius:var(--R)}
+.stats-date-row{display:flex;align-items:center;gap:10px;margin-bottom:10px;padding:8px 12px;background:var(--cb);border:1px solid var(--bd);border-radius:var(--R);flex-wrap:wrap}
 .sr{display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap}
-.sc{background:var(--cb);border:1px solid var(--bd);border-radius:var(--R);padding:12px 20px;min-width:110px;text-align:center;border-top:3px solid var(--bd)}
-.srd{border-top-color:var(--rd)}.sor{border-top-color:var(--or)}.sgr{border-top-color:var(--gn)}.sac{border-top-color:var(--a)}
+.sc{background:var(--cb);border:1px solid var(--bd);border-radius:var(--R);padding:12px 20px;min-width:100px;text-align:center;border-top:3px solid var(--bd)}
+.srd{border-top-color:var(--rd)}.sor{border-top-color:var(--or)}.sgr{border-top-color:var(--gn)}
 .sn{font-size:22px;font-weight:700}.sl{font-size:10px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;margin-top:2px}
 .fr{display:flex;gap:4px;margin-bottom:12px;flex-wrap:wrap}
 .fb{background:var(--cb);border:1px solid var(--bd);padding:5px 14px;border-radius:20px;font-size:12px;color:var(--ts)}.fb.ac{background:var(--a);color:#fff;border-color:var(--a)}.fb:hover{border-color:var(--a)}
@@ -1524,7 +684,6 @@ button{font-family:var(--F);cursor:pointer;border:none;transition:all .15s}
 .crd{background:var(--cb);border:1px solid var(--bd);border-radius:var(--R);padding:20px;margin-bottom:16px}
 .fg{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px}
 .fld{display:flex;flex-direction:column;gap:3px}.fld label{font-size:11px;font-weight:600;color:var(--ts);text-transform:uppercase;letter-spacing:.3px}.fw{grid-column:1/-1}
-.fld select{max-height:none;overflow:visible}
 .mbg{position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:1000}
 .mdl{background:var(--cb);border-radius:var(--R);width:90%;max-width:680px;max-height:85vh;overflow-y:auto;overflow-x:hidden;padding:24px;box-shadow:0 8px 32px rgba(0,0,0,.2)}
 .ms{max-width:420px}.mdl h3{font-family:var(--FD);font-size:18px;color:var(--ad);margin-bottom:16px}
@@ -1537,10 +696,10 @@ button{font-family:var(--F);cursor:pointer;border:none;transition:all .15s}
 .as{overflow-x:auto;position:relative;border:1px solid var(--bd);border-radius:var(--R);background:var(--cb)}
 .anb{position:absolute;top:50%;transform:translateY(-50%);width:30px;height:30px;background:var(--cb);border:1px solid var(--bd);border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:16px;z-index:10;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.1)}
 .anb:hover{background:var(--a);color:#fff}.apl{left:4px}.anr{right:4px}
-.at{width:100%;border-collapse:collapse;min-width:1000px}.at th,.at td{border:1px solid #e8e4de}
+.at{width:100%;border-collapse:collapse;min-width:600px}.at th,.at td{border:1px solid #e8e4de}
 .ath-r{padding:6px 10px;background:#f9f7f4;font-size:12px;font-weight:700;width:60px;text-align:center}
 .ath-t{padding:6px 8px;background:#f9f7f4;font-size:10px;font-weight:500;width:60px;color:var(--ts)}
-.ath-d{padding:5px 3px;background:#f9f7f4;text-align:center;min-width:80px}
+.ath-d{padding:5px 3px;background:#f9f7f4;text-align:center;min-width:70px}
 .adw{display:block;font-size:9px;text-transform:lowercase;color:var(--mu)}.adn{display:block;font-size:11px;font-weight:700;color:var(--tx)}
 .aty{background:#fdf2e4!important}.athol{background:var(--rb)!important}
 .avr{font-size:13px;font-weight:700;text-align:center;padding:4px 6px;background:#faf8f5}
@@ -1553,18 +712,6 @@ button{font-family:var(--F);cursor:pointer;border:none;transition:all .15s}
 .avsp{padding:0!important}.spw{display:flex;height:100%;min-height:44px}
 .sph{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:2px 1px}
 .ttp{position:fixed;transform:translate(-50%,-100%);background:var(--hb);color:var(--ht);padding:8px 12px;border-radius:var(--R);font-size:11px;line-height:1.6;white-space:pre-line;pointer-events:none;z-index:2000;box-shadow:0 4px 16px rgba(0,0,0,.3);max-width:300px}
-.cyh{text-align:center;font-family:var(--FD);font-size:28px;font-weight:700;background:var(--gn);color:#fff;padding:10px;border-radius:var(--R);margin-bottom:16px}
-.cyg{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
-.cmc{background:var(--cb);border:2px solid #2e7d32;border-radius:var(--R);overflow:hidden}
-.cmt{background:#2e7d32;color:#fff;text-align:center;font-weight:700;font-size:12px;padding:5px;letter-spacing:1.5px}
-.cmtb{width:100%;border-collapse:collapse}.cmtb th{font-size:9px;padding:4px 1px;color:var(--ts);text-align:center;background:#e8f5e9;border:1px solid #c8e6c9;font-weight:600}
-.cmtb td{font-size:11px;padding:0;text-align:center;border:1px solid #e0e0e0;cursor:default;height:34px;vertical-align:middle}
-.cd-empty{background:#fafafa}.cd:hover{background:#f0f0f0}
-.cd-num{font-size:11px;display:block}.cd-ico{font-size:8px;display:block;line-height:1;margin-top:-1px}
-.cd-hol{background:#ffcdd2!important;color:var(--rd)!important;font-weight:700}.cd-hol .cd-num{color:var(--rd)}
-.cd-we{background:#f5f5f5;color:#888}.cd-today{background:#fdf2e4!important;outline:2px solid var(--a);outline-offset:-2px}.cd-today .cd-num{color:var(--a);font-weight:700}
-.clg{display:flex;gap:16px;margin-top:14px;font-size:12px;flex-wrap:wrap;align-items:center}.clgi{display:flex;align-items:center;gap:5px}
-.fest-row{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid #f0ece6;font-size:13px}
 .tp-row{display:flex;gap:8px;margin-top:8px}.tp-n,.tp-h{flex:1;padding:10px;border-radius:var(--R);text-align:center}
 .tp-n{background:#f9f7f4}.tp-h{background:#fdf2e4;border:1px solid rgba(139,69,19,.2)}
 .tp-l{font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--mu)}.tp-v{font-size:20px;font-weight:700;color:var(--tx);margin-top:2px}.tp-h .tp-v{color:var(--a)}.tp-s{font-size:10px;color:var(--mu)}
@@ -1580,13 +727,11 @@ button{font-family:var(--F);cursor:pointer;border:none;transition:all .15s}
 .pha{aspect-ratio:4/3;border:2px dashed var(--bd);border-radius:var(--R);display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:12px;color:var(--mu)}.pha:hover{border-color:var(--a);color:var(--a)}
 .obl{margin-top:8px}.obi{display:flex;align-items:center;gap:8px;padding:6px 10px;background:#f9f7f4;border-radius:var(--R);margin-bottom:4px;font-size:12px}
 .lim-badge{display:inline-flex;align-items:center;gap:4px;padding:4px 10px;border-radius:20px;font-size:11px;font-weight:700;border:1px solid;white-space:nowrap}
-.ib{width:30px;height:30px;border:1px solid var(--bd);border-radius:var(--R);background:#fff;font-size:14px;cursor:pointer;display:flex;align-items:center;justify-content:center}.ib.ac{border-color:var(--a);background:#fdf2e4}
 .adv-row{display:flex;align-items:flex-start;gap:8px;padding:8px 10px;background:#f9f7f4;border-radius:var(--R);margin-bottom:6px;border:1px solid #e8e4de}
 .adv-num{font-weight:700;color:var(--a);font-size:14px;min-width:24px;padding-top:18px}
 @keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
 @keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}.fi{animation:fadeIn .25s ease-out}
-@keyframes pulse-warn{0%,100%{opacity:1}50%{opacity:.5}}
-.nv-warn{animation:pulse-warn 1.5s ease-in-out infinite}
+@keyframes pulse-warn{0%,100%{opacity:1}50%{opacity:.5}}.nv-warn{animation:pulse-warn 1.5s ease-in-out infinite}
 .mob-only{display:none}
 .mob-card{background:var(--cb);border:1px solid var(--bd);border-radius:var(--R);padding:12px;margin-bottom:10px}
 .mob-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px}
@@ -1597,10 +742,9 @@ button{font-family:var(--F);cursor:pointer;border:none;transition:all .15s}
 .mob-lbl{display:block;font-size:9px;text-transform:uppercase;color:var(--mu);letter-spacing:.3px}
 .mob-val{display:block;font-size:14px;font-weight:700}
 .mob-actions{display:flex;gap:6px;margin-top:8px;padding-top:8px;border-top:1px solid var(--bd)}
-@media(max-width:900px){.cyg{grid-template-columns:repeat(2,1fr)}.hab-detail{grid-template-columns:1fr}}
+@media(max-width:900px){.hab-detail{grid-template-columns:1fr}}
 @media(max-width:768px){
-.desk-only{display:none}
-.mob-only{display:block}
+.desk-only{display:none}.mob-only{display:block}
 .hdr{flex-direction:column;padding:10px 12px;gap:6px;position:relative}
 .hdr-l{gap:6px}.hdr-t{font-size:14px}.hdr-s{font-size:9px}
 .hdr-nav{justify-content:center;flex-wrap:wrap;gap:1px;width:100%}
@@ -1624,7 +768,10 @@ button{font-family:var(--F);cursor:pointer;border:none;transition:all .15s}
 .ba{padding:10px 16px;font-size:14px}
 .lr{flex-direction:column;align-items:flex-start;gap:6px}
 .lnfo{margin-left:0}
+.at{min-width:400px}.ath-d{min-width:55px}
+.conflict-grid{grid-template-columns:1fr!important}
 }
-@media(max-width:600px){.cyg{grid-template-columns:1fr}}
+@media(max-width:600px){.at{min-width:320px}.ath-d{min-width:48px}}
 `;
+
 
