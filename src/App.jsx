@@ -106,9 +106,9 @@ function useIsMobile(bp = 768) { const [m, sM] = useState(window.innerWidth <= b
 
 function LoginPage({ users, onLogin }) {
   const [u, sU] = useState(""); const [p, sP] = useState(""); const [err, sErr] = useState("");
-  const login = () => { const found = users.find((x) => x.user === u && x.pass === p); if (found) { onLogin(found); sErr(""); } else sErr("Usuario o contraseña incorrectos (" + users.length + " usuarios cargados)"); };
+  const login = () => { const found = users.find((x) => x.user === u && x.pass === p); if (found) { onLogin(found); sErr(""); } else sErr("Usuario o contraseña incorrectos"); };
   const dbOk = users.length > 0;
-  return (<div className="login-bg"><div className="login-card"><div className="login-header"><span style={{ fontSize: 36 }}>🏨</span><h1>Tinoco Apart Hotel</h1><p>Sistema de Gestión</p></div><div className="fld" style={{ marginBottom: 10 }}><label>Usuario</label><input value={u} onChange={(e) => { sU(e.target.value); sErr(""); }} placeholder="usuario" /></div><div className="fld" style={{ marginBottom: 10 }}><label>Contraseña</label><input type="password" value={p} onChange={(e) => { sP(e.target.value); sErr(""); }} placeholder="contraseña" onKeyDown={(e) => e.key === "Enter" && login()} /></div>{err && <p className="login-err">{err}</p>}<button className="ba login-btn" onClick={login}>Ingresar</button><div style={{ textAlign: "center", marginTop: 16 }}>{dbOk ? <span style={{ fontSize: 10, color: "#27ae60" }}>🟢 Conectado a Supabase ({users.length} usuarios)</span> : <span style={{ fontSize: 10, color: "#e67e22" }}>🟡 Esperando conexión a Supabase...</span>}</div></div></div>);
+  return (<div className="login-bg"><div className="login-card"><div className="login-header"><span style={{ fontSize: 36 }}>🏨</span><h1>Tinoco Apart Hotel</h1><p>Sistema de Gestión</p></div><div className="fld" style={{ marginBottom: 10 }}><label>Usuario</label><input value={u} onChange={(e) => { sU(e.target.value); sErr(""); }} placeholder="usuario" /></div><div className="fld" style={{ marginBottom: 10 }}><label>Contraseña</label><input type="password" value={p} onChange={(e) => { sP(e.target.value); sErr(""); }} placeholder="contraseña" onKeyDown={(e) => e.key === "Enter" && login()} /></div>{err && <p className="login-err">{err}</p>}<button className="ba login-btn" onClick={login}>Ingresar</button><div style={{ textAlign: "center", marginTop: 16 }}>{dbOk ? <span style={{ fontSize: 10, color: "#27ae60" }}>🟢 Conectado a Supabase</span> : <span style={{ fontSize: 10, color: "#e67e22" }}>🟡 Conectando a Supabase...</span>}</div></div></div>);
 }
 
 /* Main App */
@@ -142,7 +142,7 @@ export default function App() {
     setLoading(false);
   }, []);
 
-  useEffect(() => { if (!configured) return; loadAll(); pollRef.current = setInterval(loadAll, 8000); return () => clearInterval(pollRef.current); }, [configured, loadAll]);
+  useEffect(() => { if (!configured) return; loadAll(); pollRef.current = setInterval(loadAll, 30000); return () => clearInterval(pollRef.current); }, [configured, loadAll]);
 
   const addReservation = async (data) => { const nr = { ...data, id: genId(), created: TODAY, createdBy: curUser.name }; setRes((p) => [...p, nr]); await sbRest("reservations", "POST", [resToDb(nr)]); };
   const updateReservation = async (id, data) => { setRes((p) => p.map((r) => r.id === id ? { ...r, ...data } : r)); const d = resToDb(data); delete d.id; await sbRest("reservations", "PATCH", d, "id=eq." + id); };
@@ -210,9 +210,13 @@ export default function App() {
   );
 }
 
-/* PgReg - TODAY only availability */
+/* PgReg - month-based + TODAY availability */
 function PgReg({ res, deleteReservation, rooms, types, setModal, curUser }) {
   const [q, sQ] = useState(""); const [sf, sSf] = useState("all");
+  const now = new Date();
+  const [statsMonth, setStatsMonth] = useState(now.getMonth());
+  const [statsYear, setStatsYear] = useState(now.getFullYear());
+  const freeRoomsMonth = useMemo(() => getFreeRoomsForMonth(rooms, res, statsYear, statsMonth), [rooms, res, statsYear, statsMonth]);
   const [showAvail, setShowAvail] = useState(false);
 
   const todayAvail = useMemo(() => {
@@ -228,21 +232,35 @@ function PgReg({ res, deleteReservation, rooms, types, setModal, curUser }) {
   const occCount = todayAvail.filter(a => !a.isFree).length;
 
   const fl = useMemo(() => res.filter((r) => {
+    const ci = r.ciDate || (r.checkin ? r.checkin.split("T")[0] : "");
+    const co = r.coDate || (r.checkout ? r.checkout.split("T")[0] : "");
+    const mStart = statsYear + "-" + String(statsMonth + 1).padStart(2, "0") + "-01";
+    const mEnd = statsYear + "-" + String(statsMonth + 1).padStart(2, "0") + "-" + String(new Date(statsYear, statsMonth + 1, 0).getDate()).padStart(2, "0");
+    const inMonth = (ci <= mEnd && co >= mStart);
+    if (!inMonth) return false;
     if (sf === "all" && (r.state === "Finalizado" || r.state === "Cancelado")) return false;
     if (sf !== "all" && r.state !== sf) return false;
     if (q) { const s = q.toLowerCase(); return r.guest.toLowerCase().includes(s) || r.id.toLowerCase().includes(s) || r.doc.includes(s) || r.roomId.includes(s); }
     return true;
-  }), [res, q, sf]);
+  }), [res, q, sf, statsMonth, statsYear]);
 
+  const prevMonth = () => { if (statsMonth === 0) { setStatsMonth(11); setStatsYear(statsYear - 1); } else setStatsMonth(statsMonth - 1); };
+  const nextMonth = () => { if (statsMonth === 11) { setStatsMonth(0); setStatsYear(statsYear + 1); } else setStatsMonth(statsMonth + 1); };
   const sl = (s) => (s === "occ" ? "Ocupado" : s === "res" ? "Reservado" : "Libre");
 
   return (
     <div className="fi">
       <div className="pt"><h2 className="ptt">Registro de Huéspedes</h2><div className="ptr"><div className="sb"><span className="si">🔍</span><input placeholder="Buscar..." value={q} onChange={(e) => sQ(e.target.value)} /></div><button className="ba" onClick={() => setModal({ t: "res", d: null })}>+ Nueva Reserva</button></div></div>
-      <div style={{display:"flex",gap:12,marginBottom:12,flexWrap:"wrap"}}>
-        <div className="sc" style={{borderTopColor:"var(--gn)",flex:1,minWidth:100,cursor:"pointer"}} onClick={()=>setShowAvail(!showAvail)}><div className="sn" style={{color:"var(--gn)"}}>{freeCount}</div><div className="sl">🟢 Libres hoy</div></div>
-        <div className="sc" style={{borderTopColor:"var(--rd)",flex:1,minWidth:100,cursor:"pointer"}} onClick={()=>setShowAvail(!showAvail)}><div className="sn" style={{color:"var(--rd)"}}>{occCount}</div><div className="sl">🔴 Ocupadas hoy</div></div>
-        <div className="sc" style={{borderTopColor:"var(--a)",flex:1,minWidth:100}}><div className="sn">{rooms.length}</div><div className="sl">🏨 Total hab.</div></div>
+      <div className="stats-date-row">
+        <span style={{ fontSize: 13, fontWeight: 600 }}>Estado al:</span>
+        <button className="bc bsm" onClick={prevMonth}>◀</button>
+        <span style={{ fontSize: 14, fontWeight: 700, color: "var(--ad)", minWidth: 140, textAlign: "center" }}>{MN[statsMonth]} {statsYear}</span>
+        <button className="bc bsm" onClick={nextMonth}>▶</button>
+        {(statsMonth !== now.getMonth() || statsYear !== now.getFullYear()) && <button className="bc bsm" onClick={() => { setStatsMonth(now.getMonth()); setStatsYear(now.getFullYear()); }}>Hoy</button>}
+      </div>
+      <div style={{display:"flex",gap:8,marginBottom:12,flexWrap:"wrap"}}>
+        <button className="ba" style={{flex:1,minWidth:200}} onClick={() => setModal({ t: "freeRooms", freeRooms: freeRoomsMonth, month: statsMonth, year: statsYear })}>🟢 Hab. Libres en {MN[statsMonth]} ({freeRoomsMonth.length})</button>
+        <button className={showAvail?"bd":"bc"} style={{flex:1,minWidth:200,fontWeight:600}} onClick={()=>setShowAvail(!showAvail)}>🏨 Disponibilidad HOY — {freeCount} libres / {occCount} ocupadas</button>
       </div>
       {showAvail && (
         <div className="crd" style={{marginBottom:16}}>
@@ -272,10 +290,11 @@ function PgReg({ res, deleteReservation, rooms, types, setModal, curUser }) {
       )}
       <div className="fr">
         {["all", ...RSTATES].map((s) => (<button key={s} className={"fb" + (sf === s ? " ac" : "")} onClick={() => sSf(s)}>{s === "all" ? "Todos" : s}</button>))}
+        <span style={{marginLeft:"auto",fontSize:11,color:"var(--mu)",fontStyle:"italic"}}>{fl.length} reserva{fl.length!==1?"s":""} en {MN[statsMonth]}</span>
       </div>
       {/* Desktop */}
       <div className="tw desk-only"><table className="tb"><thead><tr><th>ID</th><th>Huésped</th><th>DNI</th><th>Canal</th><th>Hab.</th><th>Check-in</th><th>Check-out</th><th>Estado</th><th>Total</th><th>Adelantos</th><th>Saldo</th><th>Pago</th><th>Conformidad</th><th></th></tr></thead><tbody>
-        {fl.length === 0 && <tr><td colSpan={14} className="empty">No hay reservas</td></tr>}
+        {fl.length === 0 && <tr><td colSpan={14} className="empty">No hay reservas en {MN[statsMonth]}</td></tr>}
         {fl.map((r) => (<tr key={r.id}><td className="tid">{r.id}</td><td className="tgst">{r.guest}</td><td>{r.doc}</td><td>{r.channel}</td><td className="trm">{r.roomId}</td><td>{fmtDT(r.checkin)}</td><td>{fmtDT(r.checkout)}</td><td><span className={"badge b-" + r.state.toLowerCase()}>{r.state}</span></td><td className="tmny">S/ {r.total}</td><td className="tmny">S/ {(r.advances || []).reduce((s2, a) => s2 + (Number(a.amount)||0), 0) || r.advance || 0}</td><td className={"tmny " + (r.balance > 0 ? "debt" : "paid")}>S/ {r.balance}</td><td>{r.payment}</td>
           <td style={{ fontSize: 11 }}>{(() => { const pA = (r.advances || []).some((a) => a.amount > 0 && !a.verifiedBy); const pC = r.state === "Finalizado" && !r.checkoutVerifiedBy; if (pA || pC) return <span style={{ color: "#e67e22", fontWeight: 600 }}>⚠️ Por validar</span>; if (r.state === "Finalizado" && r.checkoutVerifiedBy) return <span style={{ color: "#27ae60" }}>✅ {r.checkoutVerifiedBy}</span>; if ((r.advances || []).some((a) => a.verifiedBy)) return <span style={{ color: "#27ae60" }}>✅ Pagos OK</span>; return <span style={{ color: "#999" }}>—</span>; })()}</td>
           <td className="tact"><button className="ab" onClick={() => setModal({ t: "res", d: r })}>✏️</button><button className="ab" onClick={() => { if (confirm("¿Eliminar " + r.id + "?")) deleteReservation(r.id); }}>🗑️</button></td>
@@ -283,7 +302,7 @@ function PgReg({ res, deleteReservation, rooms, types, setModal, curUser }) {
       </tbody></table></div>
       {/* Mobile */}
       <div className="mob-only">
-        {fl.length === 0 && <div className="crd" style={{ textAlign: "center", color: "#999", padding: 24 }}>No hay reservas</div>}
+        {fl.length === 0 && <div className="crd" style={{ textAlign: "center", color: "#999", padding: 24 }}>No hay reservas en {MN[statsMonth]}</div>}
         {fl.map((r) => { const tA = (r.advances || []).reduce((s2, a) => s2 + (Number(a.amount)||0), 0) || r.advance || 0; return (
           <div key={r.id} className="mob-card"><div className="mob-top"><span className="tid">{r.id}</span><span className={"badge b-" + r.state.toLowerCase()}>{r.state}</span></div><div className="mob-guest">{r.guest}</div>
             <div className="mob-row"><span>🏨 <strong>{r.roomId}</strong></span><span>👥 {r.persons}</span><span>📞 {r.channel}</span></div>
@@ -835,6 +854,7 @@ button{font-family:var(--F);cursor:pointer;border:none;transition:all .15s}
 }
 @media(max-width:600px){.at{min-width:320px}.ath-d{min-width:48px}}
 `;
+
 
 
 
