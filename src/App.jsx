@@ -189,9 +189,12 @@ const NOTES_KEY = "tinoco_notes";
 function loadNotes() { try { const r = localStorage.getItem(NOTES_KEY); return r ? JSON.parse(r) : []; } catch { return []; } }
 function saveNotes(notes) { try { localStorage.setItem(NOTES_KEY, JSON.stringify(notes)); } catch {} }
 
-const TOWEL_KEY = "tinoco_towels";
-function loadTowelData() { try { const r = localStorage.getItem(TOWEL_KEY); if (!r) return null; const d = JSON.parse(r); if (d.date !== TODAY) return null; return d; } catch { return null; } }
-function saveTowelData(data) { try { localStorage.setItem(TOWEL_KEY, JSON.stringify({ ...data, date: TODAY })); } catch {} }
+const INV_KEY = "tinoco_inventory";
+const INV_ITEMS = ["toallas","sabanas","sobresabanas","fundas"];
+const INV_LABELS = {toallas:"🧺 Toallas",sabanas:"🛏️ Sábanas",sobresabanas:"🛌 Sobresábanas",fundas:"🫧 Fundas"};
+const INV_DEFAULT = () => ({stock:0,verified:false,verifiedBy:"",deliveries:[],ingresos:[]});
+function loadInventory() { try { const r = localStorage.getItem(INV_KEY); if (!r) return null; const d = JSON.parse(r); if (d._date !== TODAY) return null; return d; } catch { return null; } }
+function saveInventory(data) { try { localStorage.setItem(INV_KEY, JSON.stringify({ ...data, _date: TODAY })); } catch {} }
 
 function useIsMobile(bp = 768) { const [m, sM] = useState(window.innerWidth <= bp); useEffect(() => { const h = () => sM(window.innerWidth <= bp); window.addEventListener("resize", h); return () => window.removeEventListener("resize", h); }, [bp]); return m; }
 
@@ -460,7 +463,7 @@ const PgReg = memo(function PgReg({ res, resIndex, deleteReservation, rooms, typ
    MdlRes - Modal de Reserva
    ============================================ */
 function MdlRes({ data, rooms, types, curUser, users, onSave, onClose }) {
-  const AUTH_USERS = (users || []).filter((u) => ["ivanaberrocal", "marianelatinoco", "dafnaberrocal"].includes(u.user));
+  const AUTH_USERS = users || [];
   const initAdv = (d) => { if (d?.advances?.length > 0) return d.advances; if (d?.advance > 0) return [{ amount: d.advance, verifiedBy: "", verifiedUser: "", date: d.created || TODAY }]; return []; };
   const [f, sF] = useState(() => {
     const d = data || { guest:"",doc:"",phone:"",email:"",channel:"WhatsApp",roomType:types[0]?.id||"",roomId:rooms[0]?.id||"",persons:1,ciDate:"",ciTime:"13:00",coDate:"",coTime:"12:00",checkin:"",checkout:"",state:"Reservado",total:0,advance:0,balance:0,payment:"Efectivo",comments:"",checkoutVerifiedBy:"",checkoutVerifiedUser:"",advances:[],lastModBy:"" };
@@ -479,8 +482,9 @@ function MdlRes({ data, rooms, types, curUser, users, onSave, onClose }) {
   const rmAdv = (i) => setAdvs(p=>p.filter((_,j)=>j!==i));
   const startAuth = (type,index) => { setAuthM({type,index}); setAuthU(""); setAuthP(""); setAuthE(""); };
   const confirmAuth = () => {
-    if(authM.type==="checkout"){const found=(users||[]).find(x=>x.user===authU&&x.pass===authP);if(!found){setAuthE("Credenciales incorrectas");return;} setCoV({by:found.name,user:found.user});}
-    else{const found=AUTH_USERS.find(x=>x.user===authU&&x.pass===authP);if(!found){setAuthE("No autorizado");return;} updAdv(authM.index,"verifiedBy",found.name);updAdv(authM.index,"verifiedUser",found.user);}
+    const found=(users||[]).find(x=>x.user===authU&&x.pass===authP);if(!found){setAuthE("Credenciales incorrectas");return;}
+    if(authM.type==="checkout"){setCoV({by:found.name,user:found.user});}
+    else{updAdv(authM.index,"verifiedBy",found.name);updAdv(authM.index,"verifiedUser",found.user);}
     setAuthM(null);
   };
   const sv = () => {
@@ -525,7 +529,7 @@ function MdlRes({ data, rooms, types, curUser, users, onSave, onClose }) {
       <div className="mf"><button className="bc" onClick={onClose}>Cancelar</button><button className="ba" onClick={sv}>{data?"Guardar":"Crear"}</button></div>
       {authM&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.6)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:2000,padding:16}}><div style={{background:"#fff",padding:24,borderRadius:12,width:"100%",maxWidth:340,boxShadow:"0 8px 24px rgba(0,0,0,.3)"}} onClick={e=>e.stopPropagation()}>
         <h4 style={{fontSize:14,marginBottom:4,color:"#6B3410"}}>🔐 Validar {authM.type==="checkout"?"Checkout":"Adelanto #"+(authM.index+1)}</h4>
-        <p style={{fontSize:11,color:"#888",marginBottom:12}}>{authM.type==="checkout"?"Cualquier usuario":"Solo autorizados"}</p>
+        <p style={{fontSize:11,color:"#888",marginBottom:12}}>Ingresa tus credenciales</p>
         <div className="fld"><label>Usuario</label><input value={authU} onChange={e=>{setAuthU(e.target.value);setAuthE("");}} placeholder="usuario" autoComplete="off"/></div>
         <div className="fld" style={{marginTop:8}}><label>Contraseña</label><input type="password" value={authP} onChange={e=>{setAuthP(e.target.value);setAuthE("");}} placeholder="contraseña" onKeyDown={e=>e.key==="Enter"&&confirmAuth()} autoComplete="off"/></div>
         {authE&&<p style={{color:"#c0392b",fontSize:11,marginTop:6}}>{authE}</p>}
@@ -638,13 +642,20 @@ function MdlAddRm({ types, onSave, onClose }) {
    PgLim - Limpieza + Toallas (con memo)
    ============================================ */
 const PgLim = memo(function PgLim({ rooms, types, res, cln, markCleaningDone, curUser, users }) {
-  const AUTH_NAMES = ["ivanaberrocal","dafnaberrocal","marianelatinoco"];
   const [rn, sRn] = useState({}); const getRn = (k) => rn[k]||""; const setRn = (k,v) => sRn(p=>({...p,[k]:v}));
-  const [towelData, setTowelData] = useState(() => loadTowelData() || { stock: 0, verified: false, verifiedBy: "", deliveries: [], ingresos: [] });
+  const [invData, setInvData] = useState(() => {
+    const saved = loadInventory();
+    if (saved) { const d = {...saved}; INV_ITEMS.forEach(k => { if (!d[k]) d[k] = INV_DEFAULT(); }); return d; }
+    const d = {}; INV_ITEMS.forEach(k => { d[k] = INV_DEFAULT(); }); return d;
+  });
+  const [activeInv, setActiveInv] = useState("toallas");
   const [tAuthM, setTAuthM] = useState(false); const [tAuthU, setTAuthU] = useState(""); const [tAuthP, setTAuthP] = useState(""); const [tAuthE, setTAuthE] = useState("");
-  const [newDel, setNewDel] = useState({ roomId: "", qty: "", source: "stock" });
-  const [newIng, setNewIng] = useState({ qty: "", note: "" });
-  useEffect(() => { saveTowelData(towelData); }, [towelData]);
+  const [newDel, setNewDel] = useState({ roomId: "", qty: "", registeredBy: "" });
+  const [newIng, setNewIng] = useState({ qty: "", note: "", registeredBy: "" });
+  useEffect(() => { saveInventory(invData); }, [invData]);
+
+  const cur = invData[activeInv] || INV_DEFAULT();
+  const setCur = (fn) => setInvData(p => ({ ...p, [activeInv]: typeof fn === "function" ? fn(p[activeInv] || INV_DEFAULT()) : fn }));
 
   const cleanList = useMemo(() => {
     const result = []; const hr = new Date().getHours();
@@ -668,32 +679,33 @@ const PgLim = memo(function PgLim({ rooms, types, res, cln, markCleaningDone, cu
     return result;
   }, [rooms, res, types]);
 
-  const towelNeeds = useMemo(() => {
+  const itemNeeds = useMemo(() => {
     const needs = []; const seen = new Set();
     for (const cl of cleanList) { if (cl.status === "parcial") { needs.push({ roomId: cl.room.id, roomName: cl.room.name, persons: Number(cl.res.persons)||1, reason: "Limpieza parcial", guest: cl.res.guest }); seen.add(cl.room.id); } }
     for (const v of verifyList) { if (!seen.has(v.room.id)) { needs.push({ roomId: v.room.id, roomName: v.room.name, persons: Number(v.res.persons)||1, reason: "Ingreso hoy", guest: v.res.guest }); } }
     return needs;
   }, [cleanList, verifyList]);
 
-  const towelAlerts = useMemo(() => {
-    return towelNeeds.map(n => {
-      const del = towelData.deliveries.filter(d => d.roomId === n.roomId).reduce((s, d) => s + d.qty, 0);
+  const itemAlerts = useMemo(() => {
+    return itemNeeds.map(n => {
+      const del = cur.deliveries.filter(d => d.roomId === n.roomId).reduce((s, d) => s + d.qty, 0);
       const missing = n.persons - del;
       return { ...n, delivered: del, missing };
     }).filter(a => a.missing > 0);
-  }, [towelNeeds, towelData.deliveries]);
+  }, [itemNeeds, cur.deliveries]);
 
-  const totalDel = towelData.deliveries.reduce((s, d) => s + d.qty, 0);
-  const totalIngreso = (towelData.ingresos || []).reduce((s, d) => s + d.qty, 0);
+  const totalDel = cur.deliveries.reduce((s, d) => s + d.qty, 0);
+  const totalIngreso = (cur.ingresos || []).reduce((s, d) => s + d.qty, 0);
   const getEff = (roomId, autoSt) => { const ov = cln[roomId]; if (ov && ov.status === "limpio" && toDS(ov.at) === TODAY) return { status: "limpio", by: ov.by, user: ov.user||"" }; return { status: autoSt, by: null, user: "" }; };
   const markClean = (roomId) => { const name = getRn("c_"+roomId).trim(); if (!name) return alert("Nombre requerido"); markCleaningDone(roomId, roomId, name, curUser.name); setRn("c_"+roomId, ""); };
   const markVerify = (roomId) => { const name = getRn("v_"+roomId).trim(); if (!name) return alert("Nombre requerido"); markCleaningDone(roomId+"_verify", roomId, name, curUser.name); setRn("v_"+roomId, ""); };
   const stInfo = { limpio: { label: "Limpio", color: "#27ae60", icon: "🟢" }, parcial: { label: "Parcial", color: "#e67e22", icon: "🟠" }, general: { label: "General", color: "#3498db", icon: "🔵" } };
-  const confirmTowelAuth = () => { const found = (users||[]).find(x => AUTH_NAMES.includes(x.user) && x.user === tAuthU && x.pass === tAuthP); if (!found) { setTAuthE("No autorizado"); return; } setTowelData(p => ({ ...p, verified: true, verifiedBy: found.name })); setTAuthM(false); };
-  const addDelivery = () => { const qty = Number(newDel.qty); if (!newDel.roomId || !qty || qty <= 0) return alert("Completa los campos"); setTowelData(p => ({ ...p, deliveries: [...p.deliveries, { roomId: newDel.roomId, qty, source: newDel.source || "stock", time: new Date().toLocaleTimeString("es-PE", { hour: "2-digit", minute: "2-digit" }) }] })); setNewDel({ roomId: "", qty: "", source: "stock" }); };
-  const rmDelivery = (i) => setTowelData(p => ({ ...p, deliveries: p.deliveries.filter((_, j) => j !== i) }));
-  const addIngreso = () => { const qty = Number(newIng.qty); if (!qty || qty <= 0) return alert("Ingresa cantidad"); setTowelData(p => ({ ...p, ingresos: [...(p.ingresos||[]), { qty, note: newIng.note, time: new Date().toLocaleTimeString("es-PE", { hour: "2-digit", minute: "2-digit" }) }] })); setNewIng({ qty: "", note: "" }); };
-  const rmIngreso = (i) => setTowelData(p => ({ ...p, ingresos: (p.ingresos||[]).filter((_, j) => j !== i) }));
+  const confirmTowelAuth = () => { const found = (users||[]).find(x => x.user === tAuthU && x.pass === tAuthP); if (!found) { setTAuthE("Credenciales incorrectas"); return; } setCur(p => ({ ...p, verified: true, verifiedBy: found.name })); setTAuthM(false); };
+  const addDelivery = () => { const qty = Number(newDel.qty); if (!newDel.roomId || !qty || qty <= 0) return alert("Completa hab. y cantidad"); if (!newDel.registeredBy.trim()) return alert("Indica quién registra"); setCur(p => ({ ...p, deliveries: [...p.deliveries, { roomId: newDel.roomId, qty, registeredBy: newDel.registeredBy.trim(), time: new Date().toLocaleTimeString("es-PE", { hour: "2-digit", minute: "2-digit" }) }] })); setNewDel({ roomId: "", qty: "", registeredBy: "" }); };
+  const rmDelivery = (i) => setCur(p => ({ ...p, deliveries: p.deliveries.filter((_, j) => j !== i) }));
+  const addIngreso = () => { const qty = Number(newIng.qty); if (!qty || qty <= 0) return alert("Ingresa cantidad"); if (!newIng.registeredBy.trim()) return alert("Indica quién registra"); setCur(p => ({ ...p, ingresos: [...(p.ingresos||[]), { qty, note: newIng.note, registeredBy: newIng.registeredBy.trim(), time: new Date().toLocaleTimeString("es-PE", { hour: "2-digit", minute: "2-digit" }) }] })); setNewIng({ qty: "", note: "", registeredBy: "" }); };
+  const rmIngreso = (i) => setCur(p => ({ ...p, ingresos: (p.ingresos||[]).filter((_, j) => j !== i) }));
+  const invLabel = INV_LABELS[activeInv] || activeInv;
 
   return (
     <div className="fi">
@@ -718,62 +730,67 @@ const PgLim = memo(function PgLim({ rooms, types, res, cln, markCleaningDone, cu
         </tbody></table></div>
       </div>)}
 
-      {/* TOALLAS */}
+      {/* INVENTARIO */}
       <div className="crd" style={{marginTop:20}}>
-        <h3 style={{fontSize:15,marginBottom:12,color:"#6B3410"}}>🧺 Inventario de Toallas — Hoy</h3>
-        <div style={{background:towelData.verified?"#e8f5e9":"#fff8e1",padding:12,borderRadius:8,border:"1px solid "+(towelData.verified?"#a5d6a7":"#ffe082"),marginBottom:12}}>
+        <h3 style={{fontSize:15,marginBottom:12,color:"#6B3410"}}>📦 Inventario — Hoy</h3>
+        <div style={{display:"flex",gap:6,marginBottom:14,flexWrap:"wrap"}}>
+          {INV_ITEMS.map(k=>(<button key={k} onClick={()=>setActiveInv(k)} style={{padding:"6px 14px",borderRadius:20,border:activeInv===k?"2px solid #6B3410":"1px solid #ccc",background:activeInv===k?"#6B3410":"#fff",color:activeInv===k?"#fff":"#333",fontSize:12,fontWeight:activeInv===k?700:400,cursor:"pointer",transition:"all .15s"}}>{INV_LABELS[k]}</button>))}
+        </div>
+
+        <div style={{background:cur.verified?"#e8f5e9":"#fff8e1",padding:12,borderRadius:8,border:"1px solid "+(cur.verified?"#a5d6a7":"#ffe082"),marginBottom:12}}>
           <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap"}}>
-            <span style={{fontSize:13,fontWeight:600}}>Stock inicial:</span>
-            {towelData.verified?(
-              <><span style={{fontSize:18,fontWeight:700,color:"#2e7d32"}}>{towelData.stock} toallas ✅ <span style={{fontSize:11,fontWeight:400}}>por {towelData.verifiedBy}</span></span>
-              <button className="bc bsm" style={{marginLeft:8}} onClick={()=>setTowelData(p=>({...p,verified:false,verifiedBy:""}))}>✏️ Modificar</button></>
+            <span style={{fontSize:13,fontWeight:600}}>Stock inicial ({invLabel}):</span>
+            {cur.verified?(
+              <><span style={{fontSize:18,fontWeight:700,color:"#2e7d32"}}>{cur.stock} ✅ <span style={{fontSize:11,fontWeight:400}}>por {cur.verifiedBy}</span></span>
+              <button className="bc bsm" style={{marginLeft:8}} onClick={()=>setCur(p=>({...p,verified:false,verifiedBy:""}))}>✏️ Modificar</button></>
             ):(
-              <><input type="number" min={0} value={towelData.stock} onChange={e=>setTowelData(p=>({...p,stock:Number(e.target.value)||0}))} style={{width:80}}/><button className="ba bsm" onClick={()=>{setTAuthM("stock");setTAuthU("");setTAuthP("");setTAuthE("");}}>🔐 Validar</button></>
+              <><input type="number" min={0} value={cur.stock} onChange={e=>setCur(p=>({...p,stock:Number(e.target.value)||0}))} style={{width:80}}/><button className="ba bsm" onClick={()=>{setTAuthM(true);setTAuthU("");setTAuthP("");setTAuthE("");}}>🔐 Validar</button></>
             )}
           </div>
-          {towelData.verified&&<p style={{fontSize:11,color:"#666",marginTop:4}}>Stock mañana: {towelData.stock} · Ingresos día: {totalIngreso} · Entregadas: {totalDel} · Disponibles: {towelData.stock + totalIngreso - totalDel}</p>}
+          {cur.verified&&<p style={{fontSize:11,color:"#666",marginTop:4}}>Stock: {cur.stock} · Ingresos: {totalIngreso} · Entregadas: {totalDel} · Disponibles: {cur.stock + totalIngreso - totalDel}</p>}
         </div>
-        {towelData.verified&&(<>
+        {cur.verified&&(<>
           {/* INGRESOS DEL DÍA */}
           <div style={{background:"#e3f2fd",padding:12,borderRadius:8,border:"1px solid #90caf9",marginBottom:12}}>
-            <h4 style={{fontSize:13,fontWeight:700,marginBottom:8,color:"#1565c0"}}>📥 Ingresos del Día <span style={{fontWeight:400,fontSize:11,color:"#666"}}>(toallas recibidas durante el día)</span></h4>
+            <h4 style={{fontSize:13,fontWeight:700,marginBottom:8,color:"#1565c0"}}>📥 Ingresos del Día <span style={{fontWeight:400,fontSize:11,color:"#666"}}>(recibidos durante el día)</span></h4>
             <div style={{display:"flex",gap:8,marginBottom:8,flexWrap:"wrap",alignItems:"flex-end"}}>
               <div className="fld" style={{width:80}}><label>Cant.</label><input type="number" min={1} value={newIng.qty} onChange={e=>setNewIng(p=>({...p,qty:e.target.value}))}/></div>
-              <div className="fld" style={{flex:1,minWidth:120}}><label>Nota (opcional)</label><input value={newIng.note} onChange={e=>setNewIng(p=>({...p,note:e.target.value}))} placeholder="Ej: Lavandería entregó"/></div>
+              <div className="fld" style={{flex:1,minWidth:100}}><label>Nota (opcional)</label><input value={newIng.note} onChange={e=>setNewIng(p=>({...p,note:e.target.value}))} placeholder="Ej: Lavandería entregó"/></div>
+              <div className="fld" style={{width:120}}><label>Registra</label><input value={newIng.registeredBy} onChange={e=>setNewIng(p=>({...p,registeredBy:e.target.value}))} placeholder="¿Quién registra?"/></div>
               <button className="ba bsm" onClick={addIngreso}>+ Registrar</button>
             </div>
-            {towelData.ingresos&&towelData.ingresos.length>0?(
-              <div className="tw" style={{marginBottom:8}}><table className="tb"><thead><tr><th>Cant.</th><th>Nota</th><th>Hora</th><th></th></tr></thead><tbody>{towelData.ingresos.map((ing,i)=>(<tr key={i}><td style={{fontWeight:700,color:"#1565c0"}}>{ing.qty}</td><td style={{fontSize:11}}>{ing.note||"—"}</td><td style={{fontSize:11}}>{ing.time}</td><td><button className="ab" onClick={()=>rmIngreso(i)}>🗑️</button></td></tr>))}</tbody></table></div>
+            {cur.ingresos&&cur.ingresos.length>0?(
+              <div className="tw" style={{marginBottom:8}}><table className="tb"><thead><tr><th>Cant.</th><th>Nota</th><th>Registró</th><th>Hora</th><th></th></tr></thead><tbody>{cur.ingresos.map((ing,i)=>(<tr key={i}><td style={{fontWeight:700,color:"#1565c0"}}>{ing.qty}</td><td style={{fontSize:11}}>{ing.note||"—"}</td><td style={{fontSize:11}}>{ing.registeredBy||"—"}</td><td style={{fontSize:11}}>{ing.time}</td><td><button className="ab" onClick={()=>rmIngreso(i)}>🗑️</button></td></tr>))}</tbody></table></div>
             ):(<p style={{fontSize:12,color:"#999",marginBottom:4}}>Sin ingresos aún</p>)}
-            <div style={{fontSize:12,fontWeight:600,color:"#1565c0"}}>Total ingresos del día: {totalIngreso} toallas</div>
+            <div style={{fontSize:12,fontWeight:600,color:"#1565c0"}}>Total ingresos: {totalIngreso}</div>
           </div>
 
-          <h4 style={{fontSize:13,fontWeight:700,marginBottom:8}}>📦 Toallas Entregadas</h4>
+          <h4 style={{fontSize:13,fontWeight:700,marginBottom:8}}>📦 Entregas — {invLabel}</h4>
           <div style={{display:"flex",gap:8,marginBottom:10,flexWrap:"wrap",alignItems:"flex-end"}}>
             <div className="fld" style={{width:120}}><label>Hab.</label><select value={newDel.roomId} onChange={e=>setNewDel(p=>({...p,roomId:e.target.value}))}><option value="">—</option>{rooms.slice().sort((a,b)=>a.name.localeCompare(b.name,undefined,{numeric:true})).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select></div>
             <div className="fld" style={{width:80}}><label>Cant.</label><input type="number" min={1} value={newDel.qty} onChange={e=>setNewDel(p=>({...p,qty:e.target.value}))}/></div>
-            <div className="fld" style={{width:100}}><label>Fuente</label><select value={newDel.source||"stock"} onChange={e=>setNewDel(p=>({...p,source:e.target.value}))}><option value="stock">Stock mañana</option><option value="ingreso">Ingreso día</option></select></div>
+            <div className="fld" style={{width:120}}><label>Registra</label><input value={newDel.registeredBy} onChange={e=>setNewDel(p=>({...p,registeredBy:e.target.value}))} placeholder="¿Quién registra?"/></div>
             <button className="ba bsm" onClick={addDelivery}>+ Entregar</button>
           </div>
-          {towelData.deliveries.length>0&&(<div className="tw" style={{marginBottom:12}}><table className="tb"><thead><tr><th>Hab.</th><th>Cant.</th><th>Fuente</th><th>Hora</th><th></th></tr></thead><tbody>{towelData.deliveries.map((d,i)=>(<tr key={i}><td className="trm">{d.roomId}</td><td>{d.qty}</td><td style={{fontSize:11}}>{d.source==="ingreso"?"📥 Ingreso":"📦 Stock"}</td><td style={{fontSize:11}}>{d.time}</td><td><button className="ab" onClick={()=>rmDelivery(i)}>🗑️</button></td></tr>))}</tbody></table></div>)}
-          {towelData.deliveries.length===0&&<p style={{fontSize:12,color:"#999",marginBottom:12}}>Sin entregas aún</p>}
+          {cur.deliveries.length>0&&(<div className="tw" style={{marginBottom:12}}><table className="tb"><thead><tr><th>Hab.</th><th>Cant.</th><th>Registró</th><th>Hora</th><th></th></tr></thead><tbody>{cur.deliveries.map((d,i)=>(<tr key={i}><td className="trm">{d.roomId}</td><td>{d.qty}</td><td style={{fontSize:11}}>{d.registeredBy||"—"}</td><td style={{fontSize:11}}>{d.time}</td><td><button className="ab" onClick={()=>rmDelivery(i)}>🗑️</button></td></tr>))}</tbody></table></div>)}
+          {cur.deliveries.length===0&&<p style={{fontSize:12,color:"#999",marginBottom:12}}>Sin entregas aún</p>}
           <div style={{background:"#f9f7f4",padding:10,borderRadius:8,border:"1px solid #e0dcd6",marginBottom:12,fontSize:12}}>
             <div style={{display:"flex",gap:16,flexWrap:"wrap",fontWeight:600}}>
-              <span>📦 Stock mañana: {towelData.stock}</span>
+              <span>📦 Stock: {cur.stock}</span>
               <span style={{color:"#1565c0"}}>📥 Ingresos: +{totalIngreso}</span>
               <span style={{color:"#c0392b"}}>📤 Entregadas: -{totalDel}</span>
-              <span style={{color: (towelData.stock+totalIngreso-totalDel)>=0?"#2e7d32":"#c0392b"}}>🧮 Disponibles: {towelData.stock + totalIngreso - totalDel}</span>
+              <span style={{color: (cur.stock+totalIngreso-totalDel)>=0?"#2e7d32":"#c0392b"}}>🧮 Disponibles: {cur.stock + totalIngreso - totalDel}</span>
             </div>
           </div>
-          <div style={{background:towelAlerts.length>0?"#fde8e5":"#e8f5e9",padding:12,borderRadius:8,border:"1px solid "+(towelAlerts.length>0?"#f5c6cb":"#a5d6a7")}}>
-            <h4 style={{fontSize:13,fontWeight:700,color:towelAlerts.length>0?"#c0392b":"#2e7d32",marginBottom:8}}>{towelAlerts.length>0?`⚠️ Faltan toallas en ${towelAlerts.length} hab.`:"✅ Toallas completas"}</h4>
-            {towelAlerts.map((a,i)=>(<div key={i} style={{display:"flex",gap:8,alignItems:"center",padding:"4px 0",flexWrap:"wrap",fontSize:12}}><strong style={{color:"#c0392b"}}>{a.roomName}</strong><span>{a.guest} ({a.reason})</span><span>Necesita: {a.persons} · Entregadas: {a.delivered}</span><span style={{color:"#c0392b",fontWeight:700}}>Faltan: {a.missing}</span></div>))}
-            {towelAlerts.length===0&&towelNeeds.length>0&&<div style={{fontSize:12,color:"#2e7d32"}}>{towelNeeds.map((n,i)=>(<div key={i}>✅ {n.roomName} — {n.guest} — {n.persons} toalla{n.persons>1?"s":""}</div>))}</div>}
-            {towelNeeds.length===0&&<p style={{fontSize:12,color:"#888"}}>No hay hab. que requieran toallas hoy</p>}
+          <div style={{background:itemAlerts.length>0?"#fde8e5":"#e8f5e9",padding:12,borderRadius:8,border:"1px solid "+(itemAlerts.length>0?"#f5c6cb":"#a5d6a7")}}>
+            <h4 style={{fontSize:13,fontWeight:700,color:itemAlerts.length>0?"#c0392b":"#2e7d32",marginBottom:8}}>{itemAlerts.length>0?`⚠️ Faltan en ${itemAlerts.length} hab.`:`✅ ${invLabel} completas`}</h4>
+            {itemAlerts.map((a,i)=>(<div key={i} style={{display:"flex",gap:8,alignItems:"center",padding:"4px 0",flexWrap:"wrap",fontSize:12}}><strong style={{color:"#c0392b"}}>{a.roomName}</strong><span>{a.guest} ({a.reason})</span><span>Necesita: {a.persons} · Entregadas: {a.delivered}</span><span style={{color:"#c0392b",fontWeight:700}}>Faltan: {a.missing}</span></div>))}
+            {itemAlerts.length===0&&itemNeeds.length>0&&<div style={{fontSize:12,color:"#2e7d32"}}>{itemNeeds.map((n,i)=>(<div key={i}>✅ {n.roomName} — {n.guest} — {n.persons} ud.</div>))}</div>}
+            {itemNeeds.length===0&&<p style={{fontSize:12,color:"#888"}}>No hay hab. que requieran {activeInv} hoy</p>}
           </div>
         </>)}
       </div>
-      {tAuthM&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.6)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:2000,padding:16}}><div style={{background:"#fff",padding:24,borderRadius:12,width:"100%",maxWidth:340}} onClick={e=>e.stopPropagation()}><h4 style={{fontSize:14,color:"#6B3410"}}>🔐 Validar Stock</h4><p style={{fontSize:11,color:"#888",marginBottom:12}}>Solo autorizados</p><div className="fld"><label>Usuario</label><input value={tAuthU} onChange={e=>{setTAuthU(e.target.value);setTAuthE("");}} placeholder="usuario" autoComplete="off"/></div><div className="fld" style={{marginTop:8}}><label>Contraseña</label><input type="password" value={tAuthP} onChange={e=>{setTAuthP(e.target.value);setTAuthE("");}} placeholder="contraseña" onKeyDown={e=>e.key==="Enter"&&confirmTowelAuth()} autoComplete="off"/></div>{tAuthE&&<p style={{color:"#c0392b",fontSize:11,marginTop:6}}>{tAuthE}</p>}<div style={{display:"flex",gap:8,marginTop:14}}><button className="ba bsm" onClick={confirmTowelAuth}>Confirmar</button><button className="bc bsm" onClick={()=>setTAuthM(false)}>Cancelar</button></div></div></div>}
+      {tAuthM&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.6)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:2000,padding:16}}><div style={{background:"#fff",padding:24,borderRadius:12,width:"100%",maxWidth:340}} onClick={e=>e.stopPropagation()}><h4 style={{fontSize:14,color:"#6B3410"}}>🔐 Validar Stock — {invLabel}</h4><p style={{fontSize:11,color:"#888",marginBottom:12}}>Ingresa tus credenciales</p><div className="fld"><label>Usuario</label><input value={tAuthU} onChange={e=>{setTAuthU(e.target.value);setTAuthE("");}} placeholder="usuario" autoComplete="off"/></div><div className="fld" style={{marginTop:8}}><label>Contraseña</label><input type="password" value={tAuthP} onChange={e=>{setTAuthP(e.target.value);setTAuthE("");}} placeholder="contraseña" onKeyDown={e=>e.key==="Enter"&&confirmTowelAuth()} autoComplete="off"/></div>{tAuthE&&<p style={{color:"#c0392b",fontSize:11,marginTop:6}}>{tAuthE}</p>}<div style={{display:"flex",gap:8,marginTop:14}}><button className="ba bsm" onClick={confirmTowelAuth}>Confirmar</button><button className="bc bsm" onClick={()=>setTAuthM(false)}>Cancelar</button></div></div></div>}
     </div>
   );
 });
@@ -870,8 +887,6 @@ const PgAvisos = memo(function PgAvisos({ conflicts, rooms, types, setModal, set
     </div>
   );
 });
-
-
 
 
 
