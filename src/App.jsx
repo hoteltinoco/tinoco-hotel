@@ -349,6 +349,7 @@ const PgReg = memo(function PgReg({ res, resIndex, deleteReservation, rooms, typ
   const [statsMonth, setStatsMonth] = useState(now.getMonth());
   const [statsYear, setStatsYear] = useState(now.getFullYear());
   const [showAvail, setShowAvail] = useState(false);
+  const [availType, setAvailType] = useState("all");
 
   const todayAvail = useMemo(() => {
     const sorted = rooms.slice().sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
@@ -394,9 +395,18 @@ const PgReg = memo(function PgReg({ res, resIndex, deleteReservation, rooms, typ
       </div>
       {showAvail && (
         <div className="crd" style={{marginBottom:16}}>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}><h4 style={{fontSize:14,color:"#6B3410",margin:0}}>📋 Disponibilidad Hoy — {new Date(TODAY+"T12:00:00").toLocaleDateString("es-PE",{weekday:"long",day:"numeric",month:"long",year:"numeric"})}</h4><button className="bc bsm" onClick={()=>setShowAvail(false)}>Cerrar ×</button></div>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12,flexWrap:"wrap",gap:8}}>
+            <h4 style={{fontSize:14,color:"#6B3410",margin:0}}>📋 Disponibilidad Hoy — {new Date(TODAY+"T12:00:00").toLocaleDateString("es-PE",{weekday:"long",day:"numeric",month:"long",year:"numeric"})}</h4>
+            <div style={{display:"flex",gap:8,alignItems:"center"}}>
+              <select value={availType} onChange={e=>setAvailType(e.target.value)} style={{fontSize:12,padding:"4px 8px",width:"auto"}}>
+                <option value="all">Todos los tipos</option>
+                {types.map(t=><option key={t.id} value={t.id}>{t.name}</option>)}
+              </select>
+              <button className="bc bsm" onClick={()=>setShowAvail(false)}>Cerrar ×</button>
+            </div>
+          </div>
           <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(140px,1fr))",gap:8}}>
-            {todayAvail.map(({room,tp,am,pm,ar,pr,isFree})=>{
+            {todayAvail.filter(a => availType === "all" || a.room.type === availType).map(({room,tp,am,pm,ar,pr,isFree})=>{
               const bgColor = isFree ? "#e8f8ee" : (am==="occ"||pm==="occ") ? "#fde8e5" : "#fef3e2";
               const borderColor = isFree ? "#a5d6a7" : (am==="occ"||pm==="occ") ? "#f5c6cb" : "#ffe082";
               const stColor = isFree ? "#2e7d32" : (am==="occ"||pm==="occ") ? "#c0392b" : "#e67e22";
@@ -860,6 +870,7 @@ const PgAvisos = memo(function PgAvisos({ conflicts, rooms, types, setModal, set
     </div>
   );
 });
+
 
 
 
