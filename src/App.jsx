@@ -4,19 +4,79 @@ const SUPABASE_URL = "https://mnaslqlkzavcmkipwalv.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_mxifxqVbzIw1LSzSDXUXkA_SZQigrOZ";
 
 const sbCfg = { url: SUPABASE_URL, key: SUPABASE_ANON_KEY };
+let _sbStatus = { ok: false, lastOk: 0, retrying: false, waking: false };
+function getSbStatus() { return _sbStatus; }
+
 async function sbRest(table, method, body, filter, prefer) {
   const url = sbCfg.url + "/rest/v1/" + table + (filter ? "?" + filter : "");
   const h = { "Content-Type": "application/json", apikey: sbCfg.key, Authorization: "Bearer " + sbCfg.key };
   if (method !== "GET") h["Prefer"] = prefer || "return=representation";
   const opts = { method, headers: h };
   if (body) opts.body = JSON.stringify(body);
-  try {
-    const r = await fetch(url, opts);
-    if (!r.ok) { console.error("SB:", await r.text()); return null; }
-    if (r.status === 204) return [];
-    return await r.json();
-  } catch (e) { console.error("SB fetch:", e); return null; }
+
+  const MAX_RETRIES = 3;
+  const RETRY_DELAYS = [2000, 5000, 10000]; // escalado progresivo
+
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      if (attempt > 0) {
+        _sbStatus = { ..._sbStatus, retrying: true, waking: attempt >= 2 };
+        await new Promise(res => setTimeout(res, RETRY_DELAYS[attempt - 1] || 10000));
+      }
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 15000); // 15s timeout
+      const r = await fetch(url, { ...opts, signal: controller.signal });
+      clearTimeout(timeout);
+
+      if (r.status === 503 || r.status === 502) {
+        // Supabase está dormido/despertando
+        _sbStatus = { ..._sbStatus, waking: true, ok: false };
+        console.warn(`SB despertar intento ${attempt + 1}/${MAX_RETRIES + 1}`);
+        continue;
+      }
+      if (!r.ok) {
+        const errText = await r.text();
+        console.error("SB:", r.status, errText);
+        if (r.status === 429) { // rate limit
+          await new Promise(res => setTimeout(res, 3000));
+          continue;
+        }
+        return null;
+      }
+      _sbStatus = { ok: true, lastOk: Date.now(), retrying: false, waking: false };
+      if (r.status === 204) return [];
+      return await r.json();
+    } catch (e) {
+      if (e.name === "AbortError") {
+        console.warn(`SB timeout intento ${attempt + 1}`);
+        _sbStatus = { ..._sbStatus, waking: true, ok: false };
+        continue;
+      }
+      console.error("SB fetch:", e);
+      if (attempt === MAX_RETRIES) {
+        _sbStatus = { ok: false, lastOk: _sbStatus.lastOk, retrying: false, waking: false };
+        return null;
+      }
+    }
+  }
+  _sbStatus = { ok: false, lastOk: _sbStatus.lastOk, retrying: false, waking: false };
+  return null;
 }
+
+/* Ping para mantener Supabase despierto - cada 4 min si la app está abierta */
+let _keepAliveInterval = null;
+function startKeepAlive() {
+  if (_keepAliveInterval) return;
+  _keepAliveInterval = setInterval(async () => {
+    try {
+      const r = await fetch(sbCfg.url + "/rest/v1/users?select=id&limit=1", {
+        headers: { apikey: sbCfg.key, Authorization: "Bearer " + sbCfg.key }
+      });
+      if (r.ok) _sbStatus = { ..._sbStatus, ok: true, lastOk: Date.now() };
+    } catch {}
+  }, 4 * 60 * 1000); // cada 4 minutos
+}
+function stopKeepAlive() { if (_keepAliveInterval) { clearInterval(_keepAliveInterval); _keepAliveInterval = null; } }
 
 const CHANNELS = ["WhatsApp", "Booking", "Airbnb", "Directo", "Teléfono", "Otro"];
 const PAYS = ["Efectivo", "Tarjeta", "Transferencia", "Yape", "Plin"];
@@ -104,11 +164,12 @@ function saveTowelData(data) { try { localStorage.setItem(TOWEL_KEY, JSON.string
 
 function useIsMobile(bp = 768) { const [m, sM] = useState(window.innerWidth <= bp); useEffect(() => { const h = () => sM(window.innerWidth <= bp); window.addEventListener("resize", h); return () => window.removeEventListener("resize", h); }, [bp]); return m; }
 
-function LoginPage({ users, onLogin }) {
+function LoginPage({ users, onLogin, connStatus, onRetry }) {
   const [u, sU] = useState(""); const [p, sP] = useState(""); const [err, sErr] = useState("");
   const login = () => { const found = users.find((x) => x.user === u && x.pass === p); if (found) { onLogin(found); sErr(""); } else sErr("Usuario o contraseña incorrectos"); };
   const dbOk = users.length > 0;
-  return (<div className="login-bg"><div className="login-card"><div className="login-header"><span style={{ fontSize: 36 }}>🏨</span><h1>Tinoco Apart Hotel</h1><p>Sistema de Gestión</p></div><div className="fld" style={{ marginBottom: 10 }}><label>Usuario</label><input value={u} onChange={(e) => { sU(e.target.value); sErr(""); }} placeholder="usuario" /></div><div className="fld" style={{ marginBottom: 10 }}><label>Contraseña</label><input type="password" value={p} onChange={(e) => { sP(e.target.value); sErr(""); }} placeholder="contraseña" onKeyDown={(e) => e.key === "Enter" && login()} /></div>{err && <p className="login-err">{err}</p>}<button className="ba login-btn" onClick={login}>Ingresar</button><div style={{ textAlign: "center", marginTop: 16 }}>{dbOk ? <span style={{ fontSize: 10, color: "#27ae60" }}>🟢 Conectado a Supabase</span> : <span style={{ fontSize: 10, color: "#e67e22" }}>🟡 Conectando a Supabase...</span>}</div></div></div>);
+  const statusInfo = dbOk ? { color: "#27ae60", icon: "🟢", text: "Conectado a Supabase" } : connStatus === "waking" ? { color: "#e67e22", icon: "⏳", text: "Despertando Supabase... espera ~30s" } : connStatus === "error" ? { color: "#c0392b", icon: "🔴", text: "Sin conexión a Supabase" } : { color: "#e67e22", icon: "🟡", text: "Conectando a Supabase..." };
+  return (<div className="login-bg"><div className="login-card"><div className="login-header"><span style={{ fontSize: 36 }}>🏨</span><h1>Tinoco Apart Hotel</h1><p>Sistema de Gestión</p></div><div className="fld" style={{ marginBottom: 10 }}><label>Usuario</label><input value={u} onChange={(e) => { sU(e.target.value); sErr(""); }} placeholder="usuario" /></div><div className="fld" style={{ marginBottom: 10 }}><label>Contraseña</label><input type="password" value={p} onChange={(e) => { sP(e.target.value); sErr(""); }} placeholder="contraseña" onKeyDown={(e) => e.key === "Enter" && login()} /></div>{err && <p className="login-err">{err}</p>}<button className="ba login-btn" onClick={login}>Ingresar</button><div style={{ textAlign: "center", marginTop: 16 }}><span style={{ fontSize: 10, color: statusInfo.color }}>{statusInfo.icon} {statusInfo.text}</span>{connStatus === "error" && <button style={{display:"block",margin:"8px auto 0",background:"none",border:"1px solid #c0392b",color:"#c0392b",padding:"4px 12px",borderRadius:6,fontSize:11,cursor:"pointer"}} onClick={onRetry}>🔄 Reintentar conexión</button>}</div></div></div>);
 }
 
 /* Main App */
@@ -128,6 +189,8 @@ export default function App() {
   const [selR, setSelR] = useState(null);
   const pollRef = useRef(null);
 
+  const [connStatus, setConnStatus] = useState("connecting"); // "connecting" | "ok" | "waking" | "error"
+
   const handleLogin = (user) => { setCurUser(user); saveSession(user); };
   const handleLogout = () => { setCurUser(null); clearSession(); };
 
@@ -135,14 +198,28 @@ export default function App() {
 
   const loadAll = useCallback(async () => {
     try {
+      setConnStatus("connecting");
       const [u, t, r, rv, h, c] = await Promise.all([sbRest("users","GET",null,"select=*"),sbRest("room_types","GET",null,"select=*"),sbRest("rooms","GET",null,"select=*"),sbRest("reservations","GET",null,"select=*"),sbRest("holidays","GET",null,"select=*"),sbRest("cleaning_overrides","GET",null,"select=*")]);
-      if (u) setUsers(u.map(dbToUser)); if (t) setTypes(t.map(dbToType)); if (r) setRooms(r.map(dbToRoom)); if (rv) setRes(rv.map(dbToRes)); if (h) setHols(h.map(dbToHol));
-      if (c) { const m = {}; c.forEach((row) => { m[row.override_key] = { key: row.override_key, roomId: row.room_id, status: row.status, by: row.done_by, at: row.done_at, user: row.registered_by }; }); setClnOverrides(m); }
-    } catch (e) { console.error("Load error:", e); }
+      const anyOk = u || t || r || rv;
+      if (anyOk) {
+        setConnStatus("ok");
+        if (u) setUsers(u.map(dbToUser)); if (t) setTypes(t.map(dbToType)); if (r) setRooms(r.map(dbToRoom)); if (rv) setRes(rv.map(dbToRes)); if (h) setHols(h.map(dbToHol));
+        if (c) { const m = {}; c.forEach((row) => { m[row.override_key] = { key: row.override_key, roomId: row.room_id, status: row.status, by: row.done_by, at: row.done_at, user: row.registered_by }; }); setClnOverrides(m); }
+      } else {
+        const st = getSbStatus();
+        setConnStatus(st.waking ? "waking" : "error");
+      }
+    } catch (e) { console.error("Load error:", e); setConnStatus("error"); }
     setLoading(false);
   }, []);
 
-  useEffect(() => { if (!configured) return; loadAll(); pollRef.current = setInterval(loadAll, 30000); return () => clearInterval(pollRef.current); }, [configured, loadAll]);
+  useEffect(() => {
+    if (!configured) return;
+    loadAll();
+    startKeepAlive();
+    pollRef.current = setInterval(loadAll, 30000);
+    return () => { clearInterval(pollRef.current); stopKeepAlive(); };
+  }, [configured, loadAll]);
 
   const addReservation = async (data) => { const nr = { ...data, id: genId(), created: TODAY, createdBy: curUser.name }; setRes((p) => [...p, nr]); await sbRest("reservations", "POST", [resToDb(nr)]); };
   const updateReservation = async (id, data) => { setRes((p) => p.map((r) => r.id === id ? { ...r, ...data } : r)); const d = resToDb(data); delete d.id; await sbRest("reservations", "PATCH", d, "id=eq." + id); };
@@ -172,14 +249,14 @@ export default function App() {
     { id: "avisos", l: conflicts.length > 0 ? `Avisos (${conflicts.length})` : "Avisos", i: "⚠️" },
   ];
 
-  if (loading) return (<><style>{CSS}</style><div className="login-bg"><div className="login-card" style={{ textAlign: "center" }}><span style={{ fontSize: 48, display: "block", marginBottom: 16 }}>🏨</span><h2 style={{ fontFamily: "var(--FD)", fontSize: 18, color: "#6B3410", marginBottom: 8 }}>Tinoco Apart Hotel</h2><p style={{ fontSize: 13, color: "#888" }}>Cargando datos...</p><div style={{ marginTop: 20 }}><div style={{ width: 40, height: 40, border: "4px solid #e0dcd6", borderTopColor: "#8B4513", borderRadius: "50%", animation: "spin 1s linear infinite", margin: "0 auto" }} /></div></div></div></>);
-  if (!curUser) return (<><style>{CSS}</style><LoginPage users={users} onLogin={handleLogin} /></>);
+  if (loading) return (<><style>{CSS}</style><div className="login-bg"><div className="login-card" style={{ textAlign: "center" }}><span style={{ fontSize: 48, display: "block", marginBottom: 16 }}>🏨</span><h2 style={{ fontFamily: "var(--FD)", fontSize: 18, color: "#6B3410", marginBottom: 8 }}>Tinoco Apart Hotel</h2><p style={{ fontSize: 13, color: "#888" }}>{connStatus === "waking" ? "⏳ Despertando base de datos..." : connStatus === "error" ? "⚠️ Intentando conectar..." : "Cargando datos..."}</p>{connStatus === "waking" && <p style={{ fontSize: 11, color: "#e67e22", marginTop: 8 }}>Supabase free se duerme tras inactividad. Espera ~30 seg...</p>}<div style={{ marginTop: 20 }}><div style={{ width: 40, height: 40, border: "4px solid #e0dcd6", borderTopColor: connStatus === "waking" ? "#e67e22" : connStatus === "error" ? "#c0392b" : "#8B4513", borderRadius: "50%", animation: "spin 1s linear infinite", margin: "0 auto" }} /></div>{connStatus === "error" && <button className="ba" style={{marginTop:16,fontSize:12}} onClick={()=>{setLoading(true);loadAll();}}>🔄 Reintentar</button>}</div></div></>);
+  if (!curUser) return (<><style>{CSS}</style><LoginPage users={users} onLogin={handleLogin} connStatus={connStatus} onRetry={()=>{setLoading(true);loadAll();}} /></>);
 
   return (
     <><style>{CSS}</style>
       <div className="app">
         <header className="hdr">
-          <div className="hdr-l"><span className="hdr-ico">🏨</span><div><h1 className="hdr-t">Tinoco Apart Hotel</h1><p className="hdr-s">Sistema de Gestión — En línea</p></div></div>
+          <div className="hdr-l"><span className="hdr-ico">🏨</span><div><h1 className="hdr-t">Tinoco Apart Hotel</h1><p className="hdr-s">Sistema de Gestión — {connStatus === "ok" ? "En línea" : connStatus === "waking" ? "⏳ Reconectando..." : connStatus === "error" ? "⚠️ Sin conexión" : "Conectando..."}</p></div></div>
           <nav className="hdr-nav">
             {nav.map((n2) => (<button key={n2.id} className={"nv" + (pg === n2.id ? " ac" : "") + (n2.id === "avisos" && conflicts.length > 0 && pg !== "avisos" ? " nv-warn" : "")} onClick={() => setPg(n2.id)} style={n2.id === "avisos" && conflicts.length > 0 ? { color: "#ff6b6b" } : {}}><span className="ni">{n2.i}</span>{n2.l}</button>))}
             <div className="hdr-user"><span className="hdr-uname">👤 {curUser.name}</span><span style={{ fontSize: 8, color: "#4caf50", marginLeft: 4 }}>●</span><button className="hdr-logout" onClick={handleLogout}>Salir</button></div>
@@ -194,17 +271,6 @@ export default function App() {
         </main>
         {modal?.t === "res" && <MdlRes data={modal.d} rooms={rooms} types={types} curUser={curUser} users={users} onSave={(d) => { if (modal.d) updateReservation(modal.d.id, { ...modal.d, ...d }); else addReservation(d); setModal(null); }} onClose={() => setModal(null)} />}
         {modal?.t === "addRoom" && <MdlAddRm types={types} onSave={(d) => { addRoom(d); setModal(null); }} onClose={() => setModal(null)} />}
-        {modal?.t === "freeRooms" && (
-          <div className="mbg" onClick={() => setModal(null)}><div className="mdl ms" onClick={(e) => e.stopPropagation()}>
-            <h3>🟢 Hab. Libres — {MN[modal.month]} {modal.year}</h3>
-            {modal.freeRooms.length === 0 ? <p style={{ color: "#999", textAlign: "center", padding: 20 }}>No hay hab. completamente libres este mes</p> : (
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(100px,1fr))", gap: 8 }}>
-                {modal.freeRooms.map((rm) => { const tp = types.find((t) => t.id === rm.type); return (<div key={rm.id} style={{ background: "#e8f8ee", border: "1px solid #a5d6a7", borderRadius: 8, padding: 10, textAlign: "center" }}><div style={{ fontFamily: "var(--FD)", fontSize: 20, fontWeight: 700, color: "#2e7d32" }}>{rm.name}</div><div style={{ fontSize: 11, color: "#666" }}>{tp?.name}</div></div>); })}
-              </div>
-            )}
-            <div className="mf"><button className="bc" onClick={() => setModal(null)}>Cerrar</button></div>
-          </div></div>
-        )}
       </div>
     </>
   );
@@ -216,7 +282,6 @@ function PgReg({ res, deleteReservation, rooms, types, setModal, curUser }) {
   const now = new Date();
   const [statsMonth, setStatsMonth] = useState(now.getMonth());
   const [statsYear, setStatsYear] = useState(now.getFullYear());
-  const freeRoomsMonth = useMemo(() => getFreeRoomsForMonth(rooms, res, statsYear, statsMonth), [rooms, res, statsYear, statsMonth]);
   const [showAvail, setShowAvail] = useState(false);
 
   const todayAvail = useMemo(() => {
@@ -259,8 +324,7 @@ function PgReg({ res, deleteReservation, rooms, types, setModal, curUser }) {
         {(statsMonth !== now.getMonth() || statsYear !== now.getFullYear()) && <button className="bc bsm" onClick={() => { setStatsMonth(now.getMonth()); setStatsYear(now.getFullYear()); }}>Hoy</button>}
       </div>
       <div style={{display:"flex",gap:8,marginBottom:12,flexWrap:"wrap"}}>
-        <button className="ba" style={{flex:1,minWidth:200}} onClick={() => setModal({ t: "freeRooms", freeRooms: freeRoomsMonth, month: statsMonth, year: statsYear })}>🟢 Hab. Libres en {MN[statsMonth]} ({freeRoomsMonth.length})</button>
-        <button className={showAvail?"bd":"bc"} style={{flex:1,minWidth:200,fontWeight:600}} onClick={()=>setShowAvail(!showAvail)}>🏨 Disponibilidad HOY — {freeCount} libres / {occCount} ocupadas</button>
+        <button className={showAvail?"bd":"ba"} style={{flex:1,minWidth:200,fontWeight:600}} onClick={()=>setShowAvail(!showAvail)}>🏨 Disponibilidad HOY — {freeCount} libres / {occCount} ocupadas</button>
       </div>
       {showAvail && (
         <div className="crd" style={{marginBottom:16}}>
