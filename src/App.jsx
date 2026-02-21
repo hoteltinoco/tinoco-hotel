@@ -1,7 +1,11 @@
-import { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback, memo } from "react";
+import "./App.css";
 
-const SUPABASE_URL = "https://mnaslqlkzavcmkipwalv.supabase.co";
-const SUPABASE_ANON_KEY = "sb_publishable_mxifxqVbzIw1LSzSDXUXkA_SZQigrOZ";
+/* ============================================
+   SUPABASE REST LAYER (sin cambios en lógica de red)
+   ============================================ */
+const SUPABASE_URL = "https://rjdmxppvauclculiahya.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_q1vnO3OSWcNrUKiVKXczsA_vsnz0kB_";
 
 const sbCfg = { url: SUPABASE_URL, key: SUPABASE_ANON_KEY };
 let _sbStatus = { ok: false, lastOk: 0, retrying: false, waking: false };
@@ -15,7 +19,7 @@ async function sbRest(table, method, body, filter, prefer) {
   if (body) opts.body = JSON.stringify(body);
 
   const MAX_RETRIES = 3;
-  const RETRY_DELAYS = [2000, 5000, 10000]; // escalado progresivo
+  const RETRY_DELAYS = [2000, 5000, 10000];
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
@@ -24,12 +28,11 @@ async function sbRest(table, method, body, filter, prefer) {
         await new Promise(res => setTimeout(res, RETRY_DELAYS[attempt - 1] || 10000));
       }
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 15000); // 15s timeout
+      const timeout = setTimeout(() => controller.abort(), 15000);
       const r = await fetch(url, { ...opts, signal: controller.signal });
       clearTimeout(timeout);
 
       if (r.status === 503 || r.status === 502) {
-        // Supabase está dormido/despertando
         _sbStatus = { ..._sbStatus, waking: true, ok: false };
         console.warn(`SB despertar intento ${attempt + 1}/${MAX_RETRIES + 1}`);
         continue;
@@ -37,10 +40,7 @@ async function sbRest(table, method, body, filter, prefer) {
       if (!r.ok) {
         const errText = await r.text();
         console.error("SB:", r.status, errText);
-        if (r.status === 429) { // rate limit
-          await new Promise(res => setTimeout(res, 3000));
-          continue;
-        }
+        if (r.status === 429) { await new Promise(res => setTimeout(res, 3000)); continue; }
         return null;
       }
       _sbStatus = { ok: true, lastOk: Date.now(), retrying: false, waking: false };
@@ -63,7 +63,7 @@ async function sbRest(table, method, body, filter, prefer) {
   return null;
 }
 
-/* Ping para mantener Supabase despierto - cada 4 min si la app está abierta */
+/* Keep-alive cada 10 min */
 let _keepAliveInterval = null;
 function startKeepAlive() {
   if (_keepAliveInterval) return;
@@ -74,30 +74,44 @@ function startKeepAlive() {
       });
       if (r.ok) _sbStatus = { ..._sbStatus, ok: true, lastOk: Date.now() };
     } catch {}
-  }, 4 * 60 * 1000); // cada 4 minutos
+  }, 10 * 60 * 1000);
 }
 function stopKeepAlive() { if (_keepAliveInterval) { clearInterval(_keepAliveInterval); _keepAliveInterval = null; } }
 
+/* ============================================
+   CONSTANTES Y UTILIDADES
+   ============================================ */
 const CHANNELS = ["WhatsApp", "Booking", "Airbnb", "Directo", "Teléfono", "Otro"];
 const PAYS = ["Efectivo", "Tarjeta", "Transferencia", "Yape", "Plin"];
 const RSTATES = ["Reservado", "Hospedado", "Finalizado", "Cancelado"];
+const MN = ["ENERO", "FEBRERO", "MARZO", "ABRIL", "MAYO", "JUNIO", "JULIO", "AGOSTO", "SEPTIEMBRE", "OCTUBRE", "NOVIEMBRE", "DICIEMBRE"];
+
 const toDS = (d) => { const x = new Date(d); return x.getFullYear() + "-" + String(x.getMonth() + 1).padStart(2, "0") + "-" + String(x.getDate()).padStart(2, "0"); };
 const addD = (ds, n) => { const d = new Date(ds + "T12:00:00"); d.setDate(d.getDate() + n); return toDS(d); };
-const genId = () => "R-" + String(Math.floor(Math.random() * 900) + 100).padStart(3, "0");
 const dwk = (ds) => new Date(ds + "T12:00:00").toLocaleDateString("es-PE", { weekday: "short" });
 const dnum = (ds) => new Date(ds + "T12:00:00").getDate();
 const msh = (ds) => new Date(ds + "T12:00:00").toLocaleDateString("es-PE", { month: "short" });
-const MN = ["ENERO", "FEBRERO", "MARZO", "ABRIL", "MAYO", "JUNIO", "JULIO", "AGOSTO", "SEPTIEMBRE", "OCTUBRE", "NOVIEMBRE", "DICIEMBRE"];
 const TODAY = toDS(new Date());
+
+// MEJORA: genId con timestamp para evitar colisiones
+const genId = () => {
+  const ts = Date.now().toString(36).slice(-4).toUpperCase();
+  const rnd = String(Math.floor(Math.random() * 900) + 100);
+  return "R-" + rnd + ts;
+};
 
 function fmtDT(dt) { if (!dt) return ""; const parts = dt.split("T"); const d = parts[0].split("-"); const t = parts.length > 1 ? parts[1].substring(0, 5) : ""; if (d.length < 3) return dt; return d[2] + "/" + d[1] + "/" + d[0] + (t ? ", " + t : ""); }
 function getHour(dt) { if (!dt) return 13; const parts = dt.split("T"); if (parts.length < 2) return 13; return parseInt(parts[1].split(":")[0]) || 13; }
 function getTime(dt) { if (!dt) return "13:00"; const parts = dt.split("T"); if (parts.length < 2) return "13:00"; return parts[1].substring(0, 5) || "13:00"; }
 
-function roomSt(rid, ds, reservations) {
+/* MEJORA: roomSt acepta resIndex (Map<roomId, res[]>) en vez de array completo */
+function roomSt(rid, ds, reservations, resIndex) {
   let am = "free", pm = "free", ar = null, pr = null;
-  for (const r of reservations) {
-    if (r.roomId !== rid || r.state === "Cancelado" || r.state === "Finalizado") continue;
+  // Usar índice si está disponible, sino recorrer todo (fallback)
+  const candidates = resIndex ? (resIndex.get(rid) || []) : reservations;
+  for (const r of candidates) {
+    if (!resIndex && r.roomId !== rid) continue;
+    if (r.state === "Cancelado" || r.state === "Finalizado") continue;
     const ci = toDS(r.checkin), co = toDS(r.checkout);
     const ciH = getHour(r.checkin), coH = getHour(r.checkout);
     const st = r.state === "Hospedado" ? "occ" : "res";
@@ -109,14 +123,25 @@ function roomSt(rid, ds, reservations) {
   return { am, pm, ar, pr };
 }
 
-function getFreeRoomsForMonth(rooms, reservations, year, month) {
+/* MEJORA: Construir índice de reservas por roomId */
+function buildResIndex(reservations) {
+  const idx = new Map();
+  for (const r of reservations) {
+    if (r.state === "Cancelado" || r.state === "Finalizado") continue;
+    if (!idx.has(r.roomId)) idx.set(r.roomId, []);
+    idx.get(r.roomId).push(r);
+  }
+  return idx;
+}
+
+function getFreeRoomsForMonth(rooms, reservations, year, month, resIndex) {
   const dim = new Date(year, month + 1, 0).getDate();
   const freeRooms = [];
   for (const room of rooms) {
     let free = true;
     for (let d = 1; d <= dim; d++) {
       const ds = year + "-" + String(month + 1).padStart(2, "0") + "-" + String(d).padStart(2, "0");
-      const { am, pm } = roomSt(room.id, ds, reservations);
+      const { am, pm } = roomSt(room.id, ds, reservations, resIndex);
       if (am !== "free" || pm !== "free") { free = false; break; }
     }
     if (free) freeRooms.push(room);
@@ -127,12 +152,18 @@ function getFreeRoomsForMonth(rooms, reservations, year, month) {
 const holsOn = (ds, hs) => hs.filter((h) => ds >= h.s && ds <= h.e);
 const isHol = (ds, hs) => holsOn(ds, hs).length > 0;
 
-function Fld({ label, type = "text", opts, value, onChange, ro, min }) {
+/* ============================================
+   COMPONENTES REUTILIZABLES
+   ============================================ */
+const Fld = memo(function Fld({ label, type = "text", opts, value, onChange, ro, min }) {
   return (<div className="fld"><label>{label}</label>
-    {type === "select" ? (<select value={value} onChange={(e) => onChange(e.target.value)}>{(opts || []).map((o) => typeof o === "string" ? (<option key={o}>{o}</option>) : (<option key={o.v} value={o.v}>{o.l}</option>))}</select>) : (<input type={type} min={min} value={value || ""} readOnly={ro} style={ro ? { opacity: 0.6 } : {}} onChange={(e) => onChange(e.target.value)} />)}
+    {type === "select" ? (<select value={value} onChange={(e) => onChange(e.target.value)}>{(opts || []).map((o) => typeof o === "string" ? (<option key={o}>{o}</option>) : (<option key={o.v} value={o.v}>{o.l}</option>))}</select>) : (<input type={type} min={min} value={value || ""} readOnly={ro} style={ro ? { opacity: 0.6 } : undefined} onChange={(e) => onChange(e.target.value)} />)}
   </div>);
-}
+});
 
+/* ============================================
+   DATA MAPPERS (sin cambios)
+   ============================================ */
 const parseJ = (v) => { if (!v) return []; if (typeof v === "string") try { return JSON.parse(v); } catch { return []; } return v; };
 const dbToRoom = (r) => ({ id: r.id, name: r.name, type: r.type_id, floor: r.floor, photos: parseJ(r.photos), obs: parseJ(r.observations) });
 const dbToType = (t) => ({ id: t.id, name: t.name, base: Number(t.base_price), high: Number(t.high_price), beds15: Number(t.beds_plaza_media) || 0, beds2: Number(t.beds_dos_plazas) || 0, cap: (Number(t.beds_plaza_media) || 0) + 2 * (Number(t.beds_dos_plazas) || 0) });
@@ -145,36 +176,40 @@ function resToDb(r) {
   return { id: r.id, created_date: r.created, created_by: r.createdBy, last_mod_by: r.lastModBy || "", guest: r.guest, doc: r.doc, phone: r.phone, email: r.email || "", channel: r.channel, room_type: r.roomType, room_id: r.roomId, persons: r.persons || 1, checkin: r.checkin, checkout: r.checkout, ci_date: r.ciDate, ci_time: r.ciTime || "13:00", co_date: r.coDate, co_time: r.coTime || "12:00", state: r.state, total: r.total, advance: r.advance, balance: r.balance, payment: r.payment, comments: r.comments || "", checkout_verified_by: r.checkoutVerifiedBy || "", checkout_verified_user: r.checkoutVerifiedUser || "", advances: JSON.stringify(r.advances || []) };
 }
 
-/* Session persistence 20min */
+/* ============================================
+   SESSION & LOCAL PERSISTENCE
+   ============================================ */
 const SESSION_KEY = "tinoco_session";
 const SESSION_TIMEOUT = 20 * 60 * 1000;
 function saveSession(user) { try { localStorage.setItem(SESSION_KEY, JSON.stringify({ user, ts: Date.now() })); } catch {} }
 function loadSession() { try { const raw = localStorage.getItem(SESSION_KEY); if (!raw) return null; const s = JSON.parse(raw); if (Date.now() - s.ts > SESSION_TIMEOUT) { localStorage.removeItem(SESSION_KEY); return null; } return s.user; } catch { return null; } }
 function clearSession() { try { localStorage.removeItem(SESSION_KEY); } catch {} }
 
-/* Notes persistence */
 const NOTES_KEY = "tinoco_notes";
 function loadNotes() { try { const r = localStorage.getItem(NOTES_KEY); return r ? JSON.parse(r) : []; } catch { return []; } }
 function saveNotes(notes) { try { localStorage.setItem(NOTES_KEY, JSON.stringify(notes)); } catch {} }
 
-/* Towels persistence (daily) */
 const TOWEL_KEY = "tinoco_towels";
 function loadTowelData() { try { const r = localStorage.getItem(TOWEL_KEY); if (!r) return null; const d = JSON.parse(r); if (d.date !== TODAY) return null; return d; } catch { return null; } }
 function saveTowelData(data) { try { localStorage.setItem(TOWEL_KEY, JSON.stringify({ ...data, date: TODAY })); } catch {} }
 
 function useIsMobile(bp = 768) { const [m, sM] = useState(window.innerWidth <= bp); useEffect(() => { const h = () => sM(window.innerWidth <= bp); window.addEventListener("resize", h); return () => window.removeEventListener("resize", h); }, [bp]); return m; }
 
-function LoginPage({ users, onLogin, connStatus, onRetry }) {
+/* ============================================
+   LOGIN PAGE
+   ============================================ */
+const LoginPage = memo(function LoginPage({ users, onLogin, connStatus, onRetry }) {
   const [u, sU] = useState(""); const [p, sP] = useState(""); const [err, sErr] = useState("");
   const login = () => { const found = users.find((x) => x.user === u && x.pass === p); if (found) { onLogin(found); sErr(""); } else sErr("Usuario o contraseña incorrectos"); };
   const dbOk = users.length > 0;
   const statusInfo = dbOk ? { color: "#27ae60", icon: "🟢", text: "Conectado a Supabase" } : connStatus === "waking" ? { color: "#e67e22", icon: "⏳", text: "Despertando Supabase... espera ~30s" } : connStatus === "error" ? { color: "#c0392b", icon: "🔴", text: "Sin conexión a Supabase" } : { color: "#e67e22", icon: "🟡", text: "Conectando a Supabase..." };
   return (<div className="login-bg"><div className="login-card"><div className="login-header"><span style={{ fontSize: 36 }}>🏨</span><h1>Tinoco Apart Hotel</h1><p>Sistema de Gestión</p></div><div className="fld" style={{ marginBottom: 10 }}><label>Usuario</label><input value={u} onChange={(e) => { sU(e.target.value); sErr(""); }} placeholder="usuario" /></div><div className="fld" style={{ marginBottom: 10 }}><label>Contraseña</label><input type="password" value={p} onChange={(e) => { sP(e.target.value); sErr(""); }} placeholder="contraseña" onKeyDown={(e) => e.key === "Enter" && login()} /></div>{err && <p className="login-err">{err}</p>}<button className="ba login-btn" onClick={login}>Ingresar</button><div style={{ textAlign: "center", marginTop: 16 }}><span style={{ fontSize: 10, color: statusInfo.color }}>{statusInfo.icon} {statusInfo.text}</span>{connStatus === "error" && <button style={{display:"block",margin:"8px auto 0",background:"none",border:"1px solid #c0392b",color:"#c0392b",padding:"4px 12px",borderRadius:6,fontSize:11,cursor:"pointer"}} onClick={onRetry}>🔄 Reintentar conexión</button>}</div></div></div>);
-}
+});
 
-/* Main App */
+/* ============================================
+   MAIN APP
+   ============================================ */
 export default function App() {
-  const [configured] = useState(true);
   const [loading, setLoading] = useState(true);
   const [curUser, setCurUser] = useState(() => loadSession());
   const [pg, setPg] = useState("reg");
@@ -188,52 +223,83 @@ export default function App() {
   const [modal, setModal] = useState(null);
   const [selR, setSelR] = useState(null);
   const pollRef = useRef(null);
+  const [connStatus, setConnStatus] = useState("connecting");
 
-  const [connStatus, setConnStatus] = useState("connecting"); // "connecting" | "ok" | "waking" | "error"
-
-  const handleLogin = (user) => { setCurUser(user); saveSession(user); };
-  const handleLogout = () => { setCurUser(null); clearSession(); };
+  const handleLogin = useCallback((user) => { setCurUser(user); saveSession(user); }, []);
+  const handleLogout = useCallback(() => { setCurUser(null); clearSession(); }, []);
 
   useEffect(() => { if (!curUser) return; const refresh = () => saveSession(curUser); const evts = ["click","keydown","scroll","touchstart"]; evts.forEach(e => window.addEventListener(e, refresh, {passive:true})); return () => evts.forEach(e => window.removeEventListener(e, refresh)); }, [curUser]);
 
-  const loadAll = useCallback(async () => {
+  const staticLoaded = useRef(false);
+
+  const loadAll = useCallback(async (forceAll = false) => {
     try {
-      setConnStatus("connecting");
-      const [u, t, r, rv, h, c] = await Promise.all([sbRest("users","GET",null,"select=*"),sbRest("room_types","GET",null,"select=*"),sbRest("rooms","GET",null,"select=*"),sbRest("reservations","GET",null,"select=*"),sbRest("holidays","GET",null,"select=*"),sbRest("cleaning_overrides","GET",null,"select=*")]);
-      const anyOk = u || t || r || rv;
-      if (anyOk) {
-        setConnStatus("ok");
-        if (u) setUsers(u.map(dbToUser)); if (t) setTypes(t.map(dbToType)); if (r) setRooms(r.map(dbToRoom)); if (rv) setRes(rv.map(dbToRes)); if (h) setHols(h.map(dbToHol));
-        if (c) { const m = {}; c.forEach((row) => { m[row.override_key] = { key: row.override_key, roomId: row.room_id, status: row.status, by: row.done_by, at: row.done_at, user: row.registered_by }; }); setClnOverrides(m); }
+      if (!staticLoaded.current || forceAll) {
+        setConnStatus("connecting");
+        const [u, t, r, rv, h, c] = await Promise.all([sbRest("users","GET",null,"select=*"),sbRest("room_types","GET",null,"select=*"),sbRest("rooms","GET",null,"select=*"),sbRest("reservations","GET",null,"select=*"),sbRest("holidays","GET",null,"select=*"),sbRest("cleaning_overrides","GET",null,"select=*")]);
+        const anyOk = u || t || r || rv;
+        if (anyOk) {
+          setConnStatus("ok");
+          if (u) setUsers(u.map(dbToUser)); if (t) setTypes(t.map(dbToType)); if (r) setRooms(r.map(dbToRoom)); if (rv) setRes(rv.map(dbToRes)); if (h) setHols(h.map(dbToHol));
+          if (c) { const m = {}; c.forEach((row) => { m[row.override_key] = { key: row.override_key, roomId: row.room_id, status: row.status, by: row.done_by, at: row.done_at, user: row.registered_by }; }); setClnOverrides(m); }
+          staticLoaded.current = true;
+        } else {
+          const st = getSbStatus();
+          setConnStatus(st.waking ? "waking" : "error");
+        }
       } else {
-        const st = getSbStatus();
-        setConnStatus(st.waking ? "waking" : "error");
+        const [rv, c] = await Promise.all([sbRest("reservations","GET",null,"select=*"),sbRest("cleaning_overrides","GET",null,"select=*")]);
+        if (rv) setRes(rv.map(dbToRes));
+        if (c) { const m = {}; c.forEach((row) => { m[row.override_key] = { key: row.override_key, roomId: row.room_id, status: row.status, by: row.done_by, at: row.done_at, user: row.registered_by }; }); setClnOverrides(m); }
+        if (rv || c) { setConnStatus("ok"); _sbStatus = { ..._sbStatus, ok: true, lastOk: Date.now() }; }
       }
     } catch (e) { console.error("Load error:", e); setConnStatus("error"); }
     setLoading(false);
   }, []);
 
   useEffect(() => {
-    if (!configured) return;
-    loadAll();
+    loadAll(true);
     startKeepAlive();
-    pollRef.current = setInterval(loadAll, 30000);
+    pollRef.current = setInterval(() => loadAll(false), 300000);
     return () => { clearInterval(pollRef.current); stopKeepAlive(); };
-  }, [configured, loadAll]);
+  }, [loadAll]);
 
-  const addReservation = async (data) => { const nr = { ...data, id: genId(), created: TODAY, createdBy: curUser.name }; setRes((p) => [...p, nr]); await sbRest("reservations", "POST", [resToDb(nr)]); };
-  const updateReservation = async (id, data) => { setRes((p) => p.map((r) => r.id === id ? { ...r, ...data } : r)); const d = resToDb(data); delete d.id; await sbRest("reservations", "PATCH", d, "id=eq." + id); };
-  const deleteReservation = async (id) => { setRes((p) => p.filter((r) => r.id !== id)); await sbRest("reservations", "DELETE", null, "id=eq." + id); };
-  const addRoom = async (data) => { const room = { ...data, photos: [], obs: [] }; setRooms((p) => [...p, room]); await sbRest("rooms", "POST", [{ id: room.id, name: room.name, type_id: room.type, floor: room.floor, photos: "[]", observations: "[]" }]); };
-  const updateRoom = async (id, data) => { setRooms((p) => p.map((r) => r.id === id ? data : r)); await sbRest("rooms", "PATCH", { name: data.name, type_id: data.type, floor: data.floor, photos: JSON.stringify(data.photos || []), observations: JSON.stringify(data.obs || []) }, "id=eq." + id); };
-  const deleteRoom = async (id) => { setRooms((p) => p.filter((r) => r.id !== id)); await sbRest("rooms", "DELETE", null, "id=eq." + id); };
-  const addType = async (data) => { setTypes((p) => [...p, data]); await sbRest("room_types", "POST", [{ id: data.id, name: data.name, base_price: data.base, high_price: data.high, capacity: data.cap, beds_plaza_media: data.beds15, beds_dos_plazas: data.beds2 }]); };
-  const updateType = async (id, data) => { setTypes((p) => p.map((t) => t.id === id ? { ...t, ...data } : t)); await sbRest("room_types", "PATCH", { name: data.name, base_price: data.base, high_price: data.high, capacity: data.cap, beds_plaza_media: data.beds15, beds_dos_plazas: data.beds2 }, "id=eq." + id); };
-  const deleteType = async (id) => { if (rooms.some((r) => r.type === id) || res.some((r) => r.roomType === id)) return alert("No se puede eliminar: tipo en uso."); setTypes((p) => p.filter((t) => t.id !== id)); await sbRest("room_types", "DELETE", null, "id=eq." + id); };
-  const addHoliday = async (data) => { setHols((p) => [...p, data]); await sbRest("holidays", "POST", [{ id: data.id, name: data.name, start_date: data.s, end_date: data.e, icon: data.icon }]); };
-  const updateHoliday = async (id, data) => { setHols((p) => p.map((h) => h.id === id ? { ...h, ...data } : h)); await sbRest("holidays", "PATCH", { name: data.name, start_date: data.s, end_date: data.e, icon: data.icon }, "id=eq." + id); };
-  const deleteHoliday = async (id) => { setHols((p) => p.filter((h) => h.id !== id)); await sbRest("holidays", "DELETE", null, "id=eq." + id); };
-  const markCleaningDone = async (key, roomId, by, userName) => { setClnOverrides((p) => ({ ...p, [key]: { key, roomId, status: "limpio", by, at: new Date().toISOString(), user: userName } })); await sbRest("cleaning_overrides", "POST", [{ override_key: key, room_id: roomId, status: "limpio", done_by: by, done_at: new Date().toISOString(), registered_by: userName }], "", "return=representation,resolution=merge-duplicates"); };
+  /* MEJORA: índice de reservas por roomId - se recalcula solo cuando cambia res */
+  const resIndex = useMemo(() => buildResIndex(res), [res]);
+
+  /* CRUD con optimistic update + rollback en error */
+  const addReservation = useCallback(async (data) => {
+    const nr = { ...data, id: genId(), created: TODAY, createdBy: curUser.name };
+    setRes((p) => [...p, nr]);
+    const result = await sbRest("reservations", "POST", [resToDb(nr)]);
+    if (!result) { setRes((p) => p.filter(r => r.id !== nr.id)); alert("Error al guardar. Reintentando..."); }
+  }, [curUser]);
+
+  const updateReservation = useCallback(async (id, data) => {
+    let prev;
+    setRes((p) => { prev = p.find(r => r.id === id); return p.map((r) => r.id === id ? { ...r, ...data } : r); });
+    const d = resToDb(data); delete d.id;
+    const result = await sbRest("reservations", "PATCH", d, "id=eq." + id);
+    if (!result && prev) { setRes((p) => p.map(r => r.id === id ? prev : r)); alert("Error al actualizar."); }
+  }, []);
+
+  const deleteReservation = useCallback(async (id) => {
+    let prev;
+    setRes((p) => { prev = p.find(r => r.id === id); return p.filter((r) => r.id !== id); });
+    const result = await sbRest("reservations", "DELETE", null, "id=eq." + id);
+    if (!result && prev) { setRes((p) => [...p, prev]); alert("Error al eliminar."); }
+  }, []);
+
+  const addRoom = useCallback(async (data) => { const room = { ...data, photos: [], obs: [] }; setRooms((p) => [...p, room]); await sbRest("rooms", "POST", [{ id: room.id, name: room.name, type_id: room.type, floor: room.floor, photos: "[]", observations: "[]" }]); }, []);
+  const updateRoom = useCallback(async (id, data) => { setRooms((p) => p.map((r) => r.id === id ? data : r)); await sbRest("rooms", "PATCH", { name: data.name, type_id: data.type, floor: data.floor, photos: JSON.stringify(data.photos || []), observations: JSON.stringify(data.obs || []) }, "id=eq." + id); }, []);
+  const deleteRoom = useCallback(async (id) => { setRooms((p) => p.filter((r) => r.id !== id)); await sbRest("rooms", "DELETE", null, "id=eq." + id); }, []);
+  const addType = useCallback(async (data) => { setTypes((p) => [...p, data]); await sbRest("room_types", "POST", [{ id: data.id, name: data.name, base_price: data.base, high_price: data.high, capacity: data.cap, beds_plaza_media: data.beds15, beds_dos_plazas: data.beds2 }]); }, []);
+  const updateType = useCallback(async (id, data) => { setTypes((p) => p.map((t) => t.id === id ? { ...t, ...data } : t)); await sbRest("room_types", "PATCH", { name: data.name, base_price: data.base, high_price: data.high, capacity: data.cap, beds_plaza_media: data.beds15, beds_dos_plazas: data.beds2 }, "id=eq." + id); }, []);
+  const deleteType = useCallback(async (id) => { if (rooms.some((r) => r.type === id) || res.some((r) => r.roomType === id)) return alert("No se puede eliminar: tipo en uso."); setTypes((p) => p.filter((t) => t.id !== id)); await sbRest("room_types", "DELETE", null, "id=eq." + id); }, [rooms, res]);
+  const addHoliday = useCallback(async (data) => { setHols((p) => [...p, data]); await sbRest("holidays", "POST", [{ id: data.id, name: data.name, start_date: data.s, end_date: data.e, icon: data.icon }]); }, []);
+  const updateHoliday = useCallback(async (id, data) => { setHols((p) => p.map((h) => h.id === id ? { ...h, ...data } : h)); await sbRest("holidays", "PATCH", { name: data.name, start_date: data.s, end_date: data.e, icon: data.icon }, "id=eq." + id); }, []);
+  const deleteHoliday = useCallback(async (id) => { setHols((p) => p.filter((h) => h.id !== id)); await sbRest("holidays", "DELETE", null, "id=eq." + id); }, []);
+  const markCleaningDone = useCallback(async (key, roomId, by, userName) => { setClnOverrides((p) => ({ ...p, [key]: { key, roomId, status: "limpio", by, at: new Date().toISOString(), user: userName } })); await sbRest("cleaning_overrides", "POST", [{ override_key: key, room_id: roomId, status: "limpio", done_by: by, done_at: new Date().toISOString(), registered_by: userName }], "", "return=representation,resolution=merge-duplicates"); }, []);
 
   const conflicts = useMemo(() => {
     const result = []; const active = res.filter((r) => r.state !== "Cancelado" && r.state !== "Finalizado");
@@ -249,35 +315,35 @@ export default function App() {
     { id: "avisos", l: conflicts.length > 0 ? `Avisos (${conflicts.length})` : "Avisos", i: "⚠️" },
   ];
 
-  if (loading) return (<><style>{CSS}</style><div className="login-bg"><div className="login-card" style={{ textAlign: "center" }}><span style={{ fontSize: 48, display: "block", marginBottom: 16 }}>🏨</span><h2 style={{ fontFamily: "var(--FD)", fontSize: 18, color: "#6B3410", marginBottom: 8 }}>Tinoco Apart Hotel</h2><p style={{ fontSize: 13, color: "#888" }}>{connStatus === "waking" ? "⏳ Despertando base de datos..." : connStatus === "error" ? "⚠️ Intentando conectar..." : "Cargando datos..."}</p>{connStatus === "waking" && <p style={{ fontSize: 11, color: "#e67e22", marginTop: 8 }}>Supabase free se duerme tras inactividad. Espera ~30 seg...</p>}<div style={{ marginTop: 20 }}><div style={{ width: 40, height: 40, border: "4px solid #e0dcd6", borderTopColor: connStatus === "waking" ? "#e67e22" : connStatus === "error" ? "#c0392b" : "#8B4513", borderRadius: "50%", animation: "spin 1s linear infinite", margin: "0 auto" }} /></div>{connStatus === "error" && <button className="ba" style={{marginTop:16,fontSize:12}} onClick={()=>{setLoading(true);loadAll();}}>🔄 Reintentar</button>}</div></div></>);
-  if (!curUser) return (<><style>{CSS}</style><LoginPage users={users} onLogin={handleLogin} connStatus={connStatus} onRetry={()=>{setLoading(true);loadAll();}} /></>);
+  if (loading) return (<div className="login-bg"><div className="login-card" style={{ textAlign: "center" }}><span style={{ fontSize: 48, display: "block", marginBottom: 16 }}>🏨</span><h2 style={{ fontFamily: "var(--FD)", fontSize: 18, color: "#6B3410", marginBottom: 8 }}>Tinoco Apart Hotel</h2><p style={{ fontSize: 13, color: "#888" }}>{connStatus === "waking" ? "⏳ Despertando base de datos..." : connStatus === "error" ? "⚠️ Intentando conectar..." : "Cargando datos..."}</p>{connStatus === "waking" && <p style={{ fontSize: 11, color: "#e67e22", marginTop: 8 }}>Supabase free se duerme tras inactividad. Espera ~30 seg...</p>}<div style={{ marginTop: 20 }}><div style={{ width: 40, height: 40, border: "4px solid #e0dcd6", borderTopColor: connStatus === "waking" ? "#e67e22" : connStatus === "error" ? "#c0392b" : "#8B4513", borderRadius: "50%", animation: "spin 1s linear infinite", margin: "0 auto" }} /></div>{connStatus === "error" && <button className="ba" style={{marginTop:16,fontSize:12}} onClick={()=>{setLoading(true);loadAll(true);}}>🔄 Reintentar</button>}</div></div>);
+  if (!curUser) return (<LoginPage users={users} onLogin={handleLogin} connStatus={connStatus} onRetry={()=>{setLoading(true);loadAll(true);}} />);
 
   return (
-    <><style>{CSS}</style>
-      <div className="app">
-        <header className="hdr">
-          <div className="hdr-l"><span className="hdr-ico">🏨</span><div><h1 className="hdr-t">Tinoco Apart Hotel</h1><p className="hdr-s">Sistema de Gestión — {connStatus === "ok" ? "En línea" : connStatus === "waking" ? "⏳ Reconectando..." : connStatus === "error" ? "⚠️ Sin conexión" : "Conectando..."}</p></div></div>
-          <nav className="hdr-nav">
-            {nav.map((n2) => (<button key={n2.id} className={"nv" + (pg === n2.id ? " ac" : "") + (n2.id === "avisos" && conflicts.length > 0 && pg !== "avisos" ? " nv-warn" : "")} onClick={() => setPg(n2.id)} style={n2.id === "avisos" && conflicts.length > 0 ? { color: "#ff6b6b" } : {}}><span className="ni">{n2.i}</span>{n2.l}</button>))}
-            <div className="hdr-user"><span className="hdr-uname">👤 {curUser.name}</span><span style={{ fontSize: 8, color: "#4caf50", marginLeft: 4 }}>●</span><button className="hdr-logout" onClick={handleLogout}>Salir</button></div>
-          </nav>
-        </header>
-        <main className="cnt">
-          {pg === "reg" && <PgReg res={res} deleteReservation={deleteReservation} rooms={rooms} types={types} setModal={setModal} curUser={curUser} />}
-          {pg === "disp" && <PgDisp rooms={rooms} types={types} res={res} hols={hols} calD={calD} setCalD={setCalD} />}
-          {pg === "hab" && <PgHab rooms={rooms} updateRoom={updateRoom} deleteRoom={deleteRoom} types={types} addType={addType} updateType={updateType} deleteType={deleteType} sel={selR} setSel={setSelR} setModal={setModal} />}
-          {pg === "lim" && <PgLim rooms={rooms} types={types} res={res} cln={clnOverrides} markCleaningDone={markCleaningDone} curUser={curUser} users={users} />}
-          {pg === "avisos" && <PgAvisos conflicts={conflicts} rooms={rooms} types={types} setModal={setModal} setPg={setPg} curUser={curUser} />}
-        </main>
-        {modal?.t === "res" && <MdlRes data={modal.d} rooms={rooms} types={types} curUser={curUser} users={users} onSave={(d) => { if (modal.d) updateReservation(modal.d.id, { ...modal.d, ...d }); else addReservation(d); setModal(null); }} onClose={() => setModal(null)} />}
-        {modal?.t === "addRoom" && <MdlAddRm types={types} onSave={(d) => { addRoom(d); setModal(null); }} onClose={() => setModal(null)} />}
-      </div>
-    </>
+    <div className="app">
+      <header className="hdr">
+        <div className="hdr-l"><span className="hdr-ico">🏨</span><div><h1 className="hdr-t">Tinoco Apart Hotel</h1><p className="hdr-s">Sistema de Gestión — {connStatus === "ok" ? "En línea" : connStatus === "waking" ? "⏳ Reconectando..." : connStatus === "error" ? "⚠️ Sin conexión" : "Conectando..."}</p></div></div>
+        <nav className="hdr-nav">
+          {nav.map((n2) => (<button key={n2.id} className={"nv" + (pg === n2.id ? " ac" : "") + (n2.id === "avisos" && conflicts.length > 0 && pg !== "avisos" ? " nv-warn" : "")} onClick={() => setPg(n2.id)} style={n2.id === "avisos" && conflicts.length > 0 ? { color: "#ff6b6b" } : undefined}><span className="ni">{n2.i}</span>{n2.l}</button>))}
+          <div className="hdr-user"><span className="hdr-uname">👤 {curUser.name}</span><span style={{ fontSize: 8, color: "#4caf50", marginLeft: 4 }}>●</span><button className="hdr-logout" onClick={()=>loadAll(true)} title="Sincronizar datos">🔄</button><button className="hdr-logout" onClick={handleLogout}>Salir</button></div>
+        </nav>
+      </header>
+      <main className="cnt">
+        {pg === "reg" && <PgReg res={res} resIndex={resIndex} deleteReservation={deleteReservation} rooms={rooms} types={types} setModal={setModal} curUser={curUser} />}
+        {pg === "disp" && <PgDisp rooms={rooms} types={types} res={res} resIndex={resIndex} hols={hols} calD={calD} setCalD={setCalD} />}
+        {pg === "hab" && <PgHab rooms={rooms} updateRoom={updateRoom} deleteRoom={deleteRoom} types={types} addType={addType} updateType={updateType} deleteType={deleteType} sel={selR} setSel={setSelR} setModal={setModal} />}
+        {pg === "lim" && <PgLim rooms={rooms} types={types} res={res} cln={clnOverrides} markCleaningDone={markCleaningDone} curUser={curUser} users={users} />}
+        {pg === "avisos" && <PgAvisos conflicts={conflicts} rooms={rooms} types={types} setModal={setModal} setPg={setPg} curUser={curUser} />}
+      </main>
+      {modal?.t === "res" && <MdlRes data={modal.d} rooms={rooms} types={types} curUser={curUser} users={users} onSave={(d) => { if (modal.d) updateReservation(modal.d.id, { ...modal.d, ...d }); else addReservation(d); setModal(null); }} onClose={() => setModal(null)} />}
+      {modal?.t === "addRoom" && <MdlAddRm types={types} onSave={(d) => { addRoom(d); setModal(null); }} onClose={() => setModal(null)} />}
+    </div>
   );
 }
 
-/* PgReg - month-based + TODAY availability */
-function PgReg({ res, deleteReservation, rooms, types, setModal, curUser }) {
+/* ============================================
+   PgReg - Registro (con memo)
+   ============================================ */
+const PgReg = memo(function PgReg({ res, resIndex, deleteReservation, rooms, types, setModal, curUser }) {
   const [q, sQ] = useState(""); const [sf, sSf] = useState("all");
   const now = new Date();
   const [statsMonth, setStatsMonth] = useState(now.getMonth());
@@ -287,12 +353,12 @@ function PgReg({ res, deleteReservation, rooms, types, setModal, curUser }) {
   const todayAvail = useMemo(() => {
     const sorted = rooms.slice().sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
     return sorted.map(rm => {
-      const { am, pm, ar, pr } = roomSt(rm.id, TODAY, res);
+      const { am, pm, ar, pr } = roomSt(rm.id, TODAY, res, resIndex);
       const tp = types.find(t => t.id === rm.type);
       const isFree = am === "free" && pm === "free";
       return { room: rm, tp, am, pm, ar, pr, isFree };
     });
-  }, [rooms, res, types]);
+  }, [rooms, res, resIndex, types]);
   const freeCount = todayAvail.filter(a => a.isFree).length;
   const occCount = todayAvail.filter(a => !a.isFree).length;
 
@@ -378,9 +444,11 @@ function PgReg({ res, deleteReservation, rooms, types, setModal, curUser }) {
       </div>
     </div>
   );
-}
+});
 
-/* MdlRes - Reservation modal (unchanged logic) */
+/* ============================================
+   MdlRes - Modal de Reserva
+   ============================================ */
 function MdlRes({ data, rooms, types, curUser, users, onSave, onClose }) {
   const AUTH_USERS = (users || []).filter((u) => ["ivanaberrocal", "marianelatinoco", "dafnaberrocal"].includes(u.user));
   const initAdv = (d) => { if (d?.advances?.length > 0) return d.advances; if (d?.advance > 0) return [{ amount: d.advance, verifiedBy: "", verifiedUser: "", date: d.created || TODAY }]; return []; };
@@ -432,9 +500,9 @@ function MdlRes({ data, rooms, types, curUser, users, onSave, onClose }) {
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8,flexWrap:"wrap"}}><span style={{fontSize:12,fontWeight:700,color:"#6B3410"}}>💵 ADELANTOS ({advs.length}/4)</span>{advs.length<4&&<button className="ba bsm" onClick={addAdv}>+ Adelanto</button>}</div>
         {advs.length===0&&<p style={{fontSize:12,color:"#999"}}>Sin adelantos</p>}
         {advs.map((a,i)=>{const lk=a.verifiedBy&&!isAuth;return(
-          <div key={i} className="adv-row" style={lk?{opacity:.85}:{}}>
+          <div key={i} className="adv-row" style={lk?{opacity:.85}:undefined}>
             <div className="adv-num">#{i+1}</div>
-            <div className="fld" style={{flex:1}}><label>Monto S/{lk?" 🔒":""}</label><input type="number" min={0} value={a.amount} readOnly={lk} style={lk?{background:"#f0f0f0",cursor:"not-allowed"}:{}} onChange={e=>updAdv(i,"amount",e.target.value)}/></div>
+            <div className="fld" style={{flex:1}}><label>Monto S/{lk?" 🔒":""}</label><input type="number" min={0} value={a.amount} readOnly={lk} style={lk?{background:"#f0f0f0",cursor:"not-allowed"}:undefined} onChange={e=>updAdv(i,"amount",e.target.value)}/></div>
             <div style={{flex:1.3,display:"flex",flexDirection:"column",gap:3}}><label style={{fontSize:11,fontWeight:600,color:"#666",textTransform:"uppercase",letterSpacing:".3px"}}>Conformidad</label>
               {a.verifiedBy?<span style={{fontSize:12,color:"#27ae60",fontWeight:600,padding:"7px 0"}}>✅ {a.verifiedBy}</span>:Number(a.amount)>0?<button className="bc bsm" style={{fontSize:11}} onClick={()=>startAuth("adv",i)}>🔐 Validar</button>:<span style={{fontSize:11,color:"#999",padding:"7px 0"}}>—</span>}
             </div>
@@ -457,8 +525,10 @@ function MdlRes({ data, rooms, types, curUser, users, onSave, onClose }) {
   );
 }
 
-/* PgDisp - responsive, mobile 2 days */
-function PgDisp({ rooms, types, res, hols, calD, setCalD }) {
+/* ============================================
+   PgDisp - Disponibilidad (con memo + resIndex)
+   ============================================ */
+const PgDisp = memo(function PgDisp({ rooms, types, res, resIndex, hols, calD, setCalD }) {
   const isMobile = useIsMobile();
   const bef = isMobile ? 2 : 3, aft = isMobile ? 2 : 4;
   const days = useMemo(() => { const r = []; for (let i = -bef; i <= aft; i++) r.push(addD(calD, i)); return r; }, [calD, bef, aft]);
@@ -487,7 +557,7 @@ function PgDisp({ rooms, types, res, hols, calD, setCalD }) {
           {days.map(d=>(<th key={d} className={"ath-d"+(d===TODAY?" aty":"")+(d===calD?" aty":"")+(isHol(d,hols)?" athol":"")}><span className="adw">{dwk(d)}</span><span className="adn">{String(dnum(d)).padStart(2,"0")}/{msh(d)}</span></th>))}
         </tr></thead><tbody>
           {filteredRooms.map(rm=>{const tp=types.find(t=>t.id===rm.type);return(<tr key={rm.id}><td className="avr">{rm.name}</td><td className="avt desk-only">{tp?.name}</td>
-            {days.map(d=>{const{am,pm,ar,pr}=roomSt(rm.id,d,res);const spl=am!==pm||(ar&&pr&&ar.id!==pr.id);
+            {days.map(d=>{const{am,pm,ar,pr}=roomSt(rm.id,d,res,resIndex);const spl=am!==pm||(ar&&pr&&ar.id!==pr.id);
               const mE=e=>{const rc=e.currentTarget.getBoundingClientRect();let tx="Hab. "+rm.name+" — "+d;if(spl){tx+="\nAM: "+sl(am)+(ar?" — "+ar.guest:"");tx+="\nPM: "+sl(pm)+(pr?" — "+pr.guest:"");}else{tx+="\n"+sl(am);if(ar)tx+="\n"+ar.guest+"\n"+fmtDT(ar.checkin)+" → "+fmtDT(ar.checkout);}sTt({x:rc.left+rc.width/2,y:rc.top-4,tx});};
               if(spl)return(<td key={d} className="avsp" onMouseEnter={mE} onMouseLeave={()=>sTt(null)}><div className="spw"><div className={"sph "+sc(am)}><span className="cl">{sl(am)}</span>{ar&&<span className="cgs">{ar.guest.split(" ")[0]}</span>}</div><div className={"sph "+sc(pm)}><span className="cl">{sl(pm)}</span>{pr&&<span className="cgs">{pr.guest.split(" ")[0]}</span>}</div></div></td>);
               return(<td key={d} className={"avc "+sc(am)} onMouseEnter={mE} onMouseLeave={()=>sTt(null)}><span className="cl">{sl(am)}</span>{ar&&<span className="cgs">{ar.guest.split(" ")[0]}</span>}</td>);
@@ -498,10 +568,12 @@ function PgDisp({ rooms, types, res, hols, calD, setCalD }) {
       {tt&&<div className="ttp" style={{left:tt.x,top:tt.y}}>{tt.tx.split("\n").map((l,i)=><div key={i}>{l}</div>)}</div>}
     </div>
   );
-}
+});
 
-/* PgHab - merged tipo+tarifa */
-function PgHab({ rooms, updateRoom, deleteRoom, types, addType, updateType, deleteType, sel, setSel, setModal }) {
+/* ============================================
+   PgHab - Habitaciones (con memo)
+   ============================================ */
+const PgHab = memo(function PgHab({ rooms, updateRoom, deleteRoom, types, addType, updateType, deleteType, sel, setSel, setModal }) {
   const [ob, sOb] = useState(""); const fr = useRef();
   const s = rooms.find(r => r.id === sel); const tp = s ? types.find(t => t.id === s.type) : null;
   const [showTypes, setShowTypes] = useState(false);
@@ -542,15 +614,20 @@ function PgHab({ rooms, updateRoom, deleteRoom, types, addType, updateType, dele
       {zoomImg&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.7)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:2000,cursor:"pointer"}} onClick={()=>setZoomImg(null)}><img src={zoomImg} alt="" style={{maxWidth:"75vw",maxHeight:"75vh",objectFit:"contain",borderRadius:8}}/><button style={{position:"absolute",top:20,right:20,background:"rgba(255,255,255,.9)",border:"none",borderRadius:"50%",width:36,height:36,fontSize:20,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}} onClick={()=>setZoomImg(null)}>×</button></div>}
     </div>
   );
-}
+});
 
+/* ============================================
+   MdlAddRm
+   ============================================ */
 function MdlAddRm({ types, onSave, onClose }) {
   const [f, sF] = useState({ id: "", name: "", type: types[0]?.id || "", floor: 1 });
   return (<div className="mbg" onClick={onClose}><div className="mdl ms" onClick={e=>e.stopPropagation()}><h3>Agregar Habitación</h3><div className="fg"><Fld label="Número" value={f.id} onChange={v=>sF({...f,id:v,name:v})}/><Fld label="Tipo" type="select" opts={types.map(t=>({v:t.id,l:t.name}))} value={f.type} onChange={v=>sF({...f,type:v})}/><Fld label="Piso" type="number" min={1} value={f.floor} onChange={v=>sF({...f,floor:+v})}/></div><div className="mf"><button className="bc" onClick={onClose}>Cancelar</button><button className="ba" onClick={()=>{if(!f.id)return alert("Ingresa número");onSave(f);}}>Agregar</button></div></div></div>);
 }
 
-/* PgLim - Limpieza + Toallas */
-function PgLim({ rooms, types, res, cln, markCleaningDone, curUser, users }) {
+/* ============================================
+   PgLim - Limpieza + Toallas (con memo)
+   ============================================ */
+const PgLim = memo(function PgLim({ rooms, types, res, cln, markCleaningDone, curUser, users }) {
   const AUTH_NAMES = ["ivanaberrocal","dafnaberrocal","marianelatinoco"];
   const [rn, sRn] = useState({}); const getRn = (k) => rn[k]||""; const setRn = (k,v) => sRn(p=>({...p,[k]:v}));
   const [towelData, setTowelData] = useState(() => loadTowelData() || { stock: 0, verified: false, verifiedBy: "", deliveries: [], ingresos: [] });
@@ -689,10 +766,12 @@ function PgLim({ rooms, types, res, cln, markCleaningDone, curUser, users }) {
       {tAuthM&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.6)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:2000,padding:16}}><div style={{background:"#fff",padding:24,borderRadius:12,width:"100%",maxWidth:340}} onClick={e=>e.stopPropagation()}><h4 style={{fontSize:14,color:"#6B3410"}}>🔐 Validar Stock</h4><p style={{fontSize:11,color:"#888",marginBottom:12}}>Solo autorizados</p><div className="fld"><label>Usuario</label><input value={tAuthU} onChange={e=>{setTAuthU(e.target.value);setTAuthE("");}} placeholder="usuario" autoComplete="off"/></div><div className="fld" style={{marginTop:8}}><label>Contraseña</label><input type="password" value={tAuthP} onChange={e=>{setTAuthP(e.target.value);setTAuthE("");}} placeholder="contraseña" onKeyDown={e=>e.key==="Enter"&&confirmTowelAuth()} autoComplete="off"/></div>{tAuthE&&<p style={{color:"#c0392b",fontSize:11,marginTop:6}}>{tAuthE}</p>}<div style={{display:"flex",gap:8,marginTop:14}}><button className="ba bsm" onClick={confirmTowelAuth}>Confirmar</button><button className="bc bsm" onClick={()=>setTAuthM(false)}>Cancelar</button></div></div></div>}
     </div>
   );
-}
+});
 
-/* PgAvisos - Conflicts + Notes */
-function PgAvisos({ conflicts, rooms, types, setModal, setPg, curUser }) {
+/* ============================================
+   PgAvisos - Conflicts + Notes (con memo)
+   ============================================ */
+const PgAvisos = memo(function PgAvisos({ conflicts, rooms, types, setModal, setPg, curUser }) {
   const [notes, setNotes] = useState(() => loadNotes());
   const [newNote, setNewNote] = useState("");
   const [editIdx, setEditIdx] = useState(null);
@@ -718,7 +797,7 @@ function PgAvisos({ conflicts, rooms, types, setModal, setPg, curUser }) {
         </div>
         {notes.length === 0 && <p style={{ color: "#999", fontSize: 13, textAlign: "center", padding: 16 }}>Sin anotaciones</p>}
         {notes.map((n, i) => (
-          <div key={i} className="note-item" style={{ display: "flex", gap: 8, alignItems: "flex-start", padding: "8px 10px", background: n.done ? "#f0f0f0" : "#f9f7f4", borderRadius: 8, marginBottom: 6, border: "1px solid #e8e4de" }}>
+          <div key={i} style={{ display: "flex", gap: 8, alignItems: "flex-start", padding: "8px 10px", background: n.done ? "#f0f0f0" : "#f9f7f4", borderRadius: 8, marginBottom: 6, border: "1px solid #e8e4de" }}>
             <button onClick={() => toggleNote(i)} style={{ background: "none", border: n.done ? "2px solid #27ae60" : "2px solid #ccc", borderRadius: 4, width: 22, height: 22, minWidth: 22, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", marginTop: 2, fontSize: 12, color: "#27ae60" }}>
               {n.done ? "✓" : ""}
             </button>
@@ -780,144 +859,8 @@ function PgAvisos({ conflicts, rooms, types, setModal, setPg, curUser }) {
       )}
     </div>
   );
-}
+});
 
-
-/* CSS */
-const CSS = `
-@import url('https://fonts.googleapis.com/css2?family=Libre+Baskerville:wght@400;700&family=Source+Sans+3:wght@300;400;500;600;700&display=swap');
-:root{--a:#8B4513;--al:#A0522D;--ad:#6B3410;--hb:#3E2723;--ht:#FAEBD7;--bg:#f7f5f2;--cb:#fff;--tx:#2c2c2c;--ts:#666;--mu:#999;--bd:#e0dcd6;--rd:#c0392b;--rb:#fde8e5;--gn:#27ae60;--gb:#e8f8ee;--or:#e67e22;--ob:#fef3e2;--R:8px;--F:'Source Sans 3',sans-serif;--FD:'Libre Baskerville',Georgia,serif}
-*{margin:0;padding:0;box-sizing:border-box}body{font-family:var(--F);background:var(--bg);color:var(--tx);line-height:1.5}
-::-webkit-scrollbar{width:6px;height:6px}::-webkit-scrollbar-track{background:var(--bg)}::-webkit-scrollbar-thumb{background:#ccc;border-radius:3px}
-input,select,textarea{font-family:var(--F);font-size:13px;background:#fff;border:1px solid var(--bd);color:var(--tx);padding:7px 10px;border-radius:var(--R);outline:none;width:100%;transition:border-color .2s}
-input:focus,select:focus,textarea:focus{border-color:var(--a)}textarea{resize:vertical;min-height:60px}
-button{font-family:var(--F);cursor:pointer;border:none;transition:all .15s}
-.ba{background:var(--a);color:#fff;padding:8px 20px;border-radius:var(--R);font-weight:600;font-size:13px}.ba:hover{background:var(--al)}
-.bc{background:#eee;color:var(--tx);padding:8px 20px;border-radius:var(--R);font-size:13px}.bc:hover{background:#ddd}
-.bd{background:var(--rb);color:var(--rd);padding:6px 14px;border-radius:var(--R);font-size:12px;border:1px solid #f5c6cb}.bd:hover{background:#f5c6cb}
-.bsm{padding:5px 12px;font-size:12px}.ab{background:none;border:none;padding:3px 6px;font-size:15px;cursor:pointer;opacity:.6}.ab:hover{opacity:1}
-.login-bg{min-height:100vh;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#3E2723 0%,#5D4037 50%,#3E2723 100%)}
-.login-card{background:var(--cb);border-radius:12px;padding:36px;width:360px;box-shadow:0 12px 48px rgba(0,0,0,.3)}
-.login-header{text-align:center;margin-bottom:24px}.login-header h1{font-family:var(--FD);font-size:22px;color:var(--ad);margin-top:8px}.login-header p{font-size:12px;color:var(--mu)}
-.login-btn{width:100%;margin-top:16px;padding:12px;font-size:14px}.login-err{color:var(--rd);font-size:12px;margin-top:8px;text-align:center}
-.hdr{background:var(--hb);color:var(--ht);padding:0 20px;display:flex;align-items:center;justify-content:space-between;min-height:56px;position:sticky;top:0;z-index:100;box-shadow:0 2px 12px rgba(0,0,0,.2)}
-.hdr-l{display:flex;align-items:center;gap:10px}.hdr-ico{font-size:24px}.hdr-t{font-family:var(--FD);font-size:16px;font-weight:700;color:#FAEBD7}.hdr-s{font-size:10px;opacity:.7}
-.hdr-nav{display:flex;gap:2px;flex-wrap:wrap;align-items:center}
-.nv{background:transparent;color:rgba(250,235,215,.7);padding:7px 12px;border-radius:var(--R);font-size:12px;font-weight:500;display:flex;align-items:center;gap:4px;white-space:nowrap}
-.nv:hover{background:rgba(255,255,255,.1);color:#FAEBD7}.nv.ac{background:rgba(255,255,255,.15);color:#fff;font-weight:600}.ni{font-size:13px}
-.hdr-user{display:flex;align-items:center;gap:8px;margin-left:16px;padding-left:16px;border-left:1px solid rgba(255,255,255,.15)}
-.hdr-uname{font-size:12px;color:rgba(250,235,215,.8)}.hdr-logout{background:rgba(255,255,255,.1);color:#FAEBD7;padding:4px 10px;border-radius:var(--R);font-size:11px}.hdr-logout:hover{background:rgba(255,255,255,.2)}
-.cnt{max-width:1440px;margin:0 auto;padding:20px 24px 40px}
-.pt{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:12px}
-.ptt{font-family:var(--FD);font-size:20px;color:var(--tx)}.ptr{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.sb{position:relative}.sb input{padding-left:32px;width:260px}.si{position:absolute;left:10px;top:50%;transform:translateY(-50%);font-size:14px}
-.stats-date-row{display:flex;align-items:center;gap:10px;margin-bottom:10px;padding:8px 12px;background:var(--cb);border:1px solid var(--bd);border-radius:var(--R);flex-wrap:wrap}
-.sr{display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap}
-.sc{background:var(--cb);border:1px solid var(--bd);border-radius:var(--R);padding:12px 20px;min-width:100px;text-align:center;border-top:3px solid var(--bd)}
-.srd{border-top-color:var(--rd)}.sor{border-top-color:var(--or)}.sgr{border-top-color:var(--gn)}
-.sn{font-size:22px;font-weight:700}.sl{font-size:10px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;margin-top:2px}
-.fr{display:flex;gap:4px;margin-bottom:12px;flex-wrap:wrap}
-.fb{background:var(--cb);border:1px solid var(--bd);padding:5px 14px;border-radius:20px;font-size:12px;color:var(--ts)}.fb.ac{background:var(--a);color:#fff;border-color:var(--a)}.fb:hover{border-color:var(--a)}
-.tw{overflow-x:auto;border:1px solid var(--bd);border-radius:var(--R);background:var(--cb)}
-.tb{width:100%;border-collapse:collapse;font-size:13px}
-.tb thead{background:#f9f7f4}.tb th{padding:9px 10px;text-align:left;font-size:10px;font-weight:600;color:var(--ts);text-transform:uppercase;letter-spacing:.3px;border-bottom:2px solid var(--bd);white-space:nowrap}
-.tb td{padding:9px 10px;border-bottom:1px solid #f0ece6;white-space:nowrap;vertical-align:middle}.tb tr:hover td{background:#faf8f5}
-.tid{font-weight:700;color:var(--ad);font-size:12px}.tgst{font-weight:500}.trm{font-weight:700;font-size:14px}.tmny{font-weight:600}
-.debt{color:var(--rd)}.paid{color:var(--gn)}.tact{white-space:nowrap}.empty{text-align:center;padding:32px;color:#999}
-.badge{display:inline-block;padding:3px 10px;border-radius:4px;font-size:11px;font-weight:700;color:#fff}
-.b-hospedado{background:var(--rd)}.b-reservado{background:var(--or)}.b-finalizado{background:var(--gn)}.b-cancelado{background:#aaa}
-.crd{background:var(--cb);border:1px solid var(--bd);border-radius:var(--R);padding:20px;margin-bottom:16px}
-.fg{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px}
-.fld{display:flex;flex-direction:column;gap:3px}.fld label{font-size:11px;font-weight:600;color:var(--ts);text-transform:uppercase;letter-spacing:.3px}.fw{grid-column:1/-1}
-.mbg{position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:1000}
-.mdl{background:var(--cb);border-radius:var(--R);width:90%;max-width:680px;max-height:85vh;overflow-y:auto;overflow-x:hidden;padding:24px;box-shadow:0 8px 32px rgba(0,0,0,.2)}
-.ms{max-width:420px}.mdl h3{font-family:var(--FD);font-size:18px;color:var(--ad);margin-bottom:16px}
-.mf{display:flex;gap:8px;justify-content:flex-end;margin-top:16px;padding-top:12px;border-top:1px solid var(--bd)}
-.di{width:150px}
-.lr{display:flex;gap:14px;align-items:center;margin-bottom:12px;flex-wrap:wrap;padding:8px 12px;background:var(--cb);border:1px solid var(--bd);border-radius:var(--R)}
-.li{display:flex;align-items:center;gap:5px;font-size:12px;font-weight:500}
-.ld{width:14px;height:14px;border-radius:3px;display:inline-block}.dg{background:var(--gn)}.dor{background:var(--or)}.dr{background:var(--rd)}
-.lnfo{font-size:11px;color:var(--mu);margin-left:auto;font-style:italic}
-.as{overflow-x:auto;position:relative;border:1px solid var(--bd);border-radius:var(--R);background:var(--cb)}
-.anb{position:absolute;top:50%;transform:translateY(-50%);width:30px;height:30px;background:var(--cb);border:1px solid var(--bd);border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:16px;z-index:10;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.1)}
-.anb:hover{background:var(--a);color:#fff}.apl{left:4px}.anr{right:4px}
-.at{width:100%;border-collapse:collapse;min-width:600px}.at th,.at td{border:1px solid #e8e4de}
-.ath-r{padding:6px 10px;background:#f9f7f4;font-size:12px;font-weight:700;width:60px;text-align:center}
-.ath-t{padding:6px 8px;background:#f9f7f4;font-size:10px;font-weight:500;width:60px;color:var(--ts)}
-.ath-d{padding:5px 3px;background:#f9f7f4;text-align:center;min-width:70px}
-.adw{display:block;font-size:9px;text-transform:lowercase;color:var(--mu)}.adn{display:block;font-size:11px;font-weight:700;color:var(--tx)}
-.aty{background:#fdf2e4!important}.athol{background:var(--rb)!important}
-.avr{font-size:13px;font-weight:700;text-align:center;padding:4px 6px;background:#faf8f5}
-.avt{font-size:10px;color:var(--ts);text-align:center;padding:4px 4px;background:#faf8f5}
-.avc{text-align:center;padding:5px 3px;vertical-align:middle;cursor:default}
-.cf{background:var(--gb)}.co{background:var(--rb)}.cr{background:var(--ob)}
-.cl{display:block;font-size:9px;font-weight:700;letter-spacing:.2px}
-.cf .cl{color:var(--gn)}.co .cl{color:var(--rd)}.cr .cl{color:var(--or)}
-.cgs{display:block;font-size:9px;font-weight:500;color:#555;margin-top:1px}
-.avsp{padding:0!important}.spw{display:flex;height:100%;min-height:44px}
-.sph{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:2px 1px}
-.ttp{position:fixed;transform:translate(-50%,-100%);background:var(--hb);color:var(--ht);padding:8px 12px;border-radius:var(--R);font-size:11px;line-height:1.6;white-space:pre-line;pointer-events:none;z-index:2000;box-shadow:0 4px 16px rgba(0,0,0,.3);max-width:300px}
-.tp-row{display:flex;gap:8px;margin-top:8px}.tp-n,.tp-h{flex:1;padding:10px;border-radius:var(--R);text-align:center}
-.tp-n{background:#f9f7f4}.tp-h{background:#fdf2e4;border:1px solid rgba(139,69,19,.2)}
-.tp-l{font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--mu)}.tp-v{font-size:20px;font-weight:700;color:var(--tx);margin-top:2px}.tp-h .tp-v{color:var(--a)}.tp-s{font-size:10px;color:var(--mu)}
-.btn-et{margin-top:10px;background:none;border:1px solid var(--bd);padding:5px 12px;border-radius:var(--R);font-size:12px;color:var(--ts);width:100%}.btn-et:hover{border-color:var(--a);color:var(--a)}
-.rg{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px;margin-bottom:16px}
-.rc{background:var(--cb);border:1px solid var(--bd);border-radius:var(--R);padding:12px;cursor:pointer;text-align:center;transition:all .15s}
-.rc:hover{border-color:var(--a);transform:translateY(-1px)}.rc.ac{border-color:var(--a);box-shadow:0 0 0 2px rgba(139,69,19,.2)}
-.rn{font-family:var(--FD);font-size:22px;font-weight:700;color:var(--ad)}.rtl{font-size:11px;color:var(--ts)}.rmeta{font-size:10px;color:var(--mu);margin-top:2px}
-.hab-detail{display:grid;grid-template-columns:1fr 320px;gap:16px}.hab-left{min-width:0}.hab-right{min-width:0}
-.phg{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:8px}
-.pht{position:relative;aspect-ratio:4/3;border-radius:var(--R);overflow:hidden;background:#f0f0f0}.pht img{width:100%;height:100%;object-fit:cover}
-.phr{position:absolute;top:3px;right:3px;background:rgba(0,0,0,.6);color:#fff;width:20px;height:20px;border-radius:50%;font-size:13px;cursor:pointer;display:flex;align-items:center;justify-content:center;border:none}
-.pha{aspect-ratio:4/3;border:2px dashed var(--bd);border-radius:var(--R);display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:12px;color:var(--mu)}.pha:hover{border-color:var(--a);color:var(--a)}
-.obl{margin-top:8px}.obi{display:flex;align-items:center;gap:8px;padding:6px 10px;background:#f9f7f4;border-radius:var(--R);margin-bottom:4px;font-size:12px}
-.lim-badge{display:inline-flex;align-items:center;gap:4px;padding:4px 10px;border-radius:20px;font-size:11px;font-weight:700;border:1px solid;white-space:nowrap}
-.adv-row{display:flex;align-items:flex-start;gap:8px;padding:8px 10px;background:#f9f7f4;border-radius:var(--R);margin-bottom:6px;border:1px solid #e8e4de}
-.adv-num{font-weight:700;color:var(--a);font-size:14px;min-width:24px;padding-top:18px}
-@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
-@keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}.fi{animation:fadeIn .25s ease-out}
-@keyframes pulse-warn{0%,100%{opacity:1}50%{opacity:.5}}.nv-warn{animation:pulse-warn 1.5s ease-in-out infinite}
-.mob-only{display:none}
-.mob-card{background:var(--cb);border:1px solid var(--bd);border-radius:var(--R);padding:12px;margin-bottom:10px}
-.mob-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px}
-.mob-guest{font-size:16px;font-weight:700;color:var(--tx);margin-bottom:6px}
-.mob-row{display:flex;gap:10px;flex-wrap:wrap;font-size:12px;color:var(--ts);margin-bottom:3px}
-.mob-money{display:flex;gap:8px;margin:8px 0;padding:8px;background:#f9f7f4;border-radius:6px}
-.mob-money>div{flex:1;text-align:center}
-.mob-lbl{display:block;font-size:9px;text-transform:uppercase;color:var(--mu);letter-spacing:.3px}
-.mob-val{display:block;font-size:14px;font-weight:700}
-.mob-actions{display:flex;gap:6px;margin-top:8px;padding-top:8px;border-top:1px solid var(--bd)}
-@media(max-width:900px){.hab-detail{grid-template-columns:1fr}}
-@media(max-width:768px){
-.desk-only{display:none}.mob-only{display:block}
-.hdr{flex-direction:column;padding:10px 12px;gap:6px;position:relative}
-.hdr-l{gap:6px}.hdr-t{font-size:14px}.hdr-s{font-size:9px}
-.hdr-nav{justify-content:center;flex-wrap:wrap;gap:1px;width:100%}
-.nv{padding:5px 8px;font-size:11px;gap:2px}.ni{font-size:11px}
-.hdr-user{margin-left:0;padding-left:0;border-left:none;border-top:1px solid rgba(255,255,255,.15);padding-top:6px;width:100%;justify-content:center}
-.cnt{padding:10px 8px 30px}
-.pt{flex-direction:column;align-items:flex-start;gap:8px}
-.ptr{width:100%;flex-wrap:wrap}
-.sb{width:100%}.sb input{width:100%}
-.fg{grid-template-columns:1fr}
-.sr{flex-wrap:wrap;gap:8px}.sc{min-width:70px;padding:8px 10px}.sn{font-size:18px}
-.stats-date-row{flex-wrap:wrap}
-.tw{font-size:11px}
-.tb th{padding:6px 5px;font-size:9px}.tb td{padding:6px 5px;font-size:11px}
-.mdl{width:95%;max-width:none;padding:16px;max-height:90vh}
-.mdl h3{font-size:15px;margin-bottom:10px}
-.mf{flex-direction:column}.mf button{width:100%;padding:12px}
-.adv-row{flex-wrap:wrap;gap:4px}
-.adv-num{padding-top:0;min-width:20px}
-.fr{gap:3px}.fb{padding:4px 10px;font-size:11px}
-.ba{padding:10px 16px;font-size:14px}
-.lr{flex-direction:column;align-items:flex-start;gap:6px}
-.lnfo{margin-left:0}
-.at{min-width:400px}.ath-d{min-width:55px}
-.conflict-grid{grid-template-columns:1fr!important}
-}
-@media(max-width:600px){.at{min-width:320px}.ath-d{min-width:48px}}
-`;
 
 
 
