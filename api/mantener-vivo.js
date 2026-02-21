@@ -1,7 +1,7 @@
-const SUPABASE_URL = "https://mnaslqlkzavcmkipwalv.supabase.co";
-const SUPABASE_KEY = "sb_publishable_mxifxqVbzIw1LSzSDXUXkA_SZQigrOZ";
+module.exports = async function handler(req, res) {
+  const SUPABASE_URL = "https://mnaslqlkzavcmkipwalv.supabase.co";
+  const SUPABASE_KEY = "sb_publishable_mxifxqVbzIw1LSzSDXUXkA_SZQigrOZ";
 
-export default async function handler(req, res) {
   try {
     const response = await fetch(
       SUPABASE_URL + "/rest/v1/users?select=id&limit=1",
@@ -33,4 +33,4 @@ export default async function handler(req, res) {
       timestamp: new Date().toISOString(),
     });
   }
-}
+};
