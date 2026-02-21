@@ -79,6 +79,46 @@ function startKeepAlive() {
 function stopKeepAlive() { if (_keepAliveInterval) { clearInterval(_keepAliveInterval); _keepAliveInterval = null; } }
 
 /* ============================================
+   OFFLINE QUEUE - Cola de operaciones pendientes
+   ============================================ */
+const QUEUE_KEY = "tinoco_offline_queue";
+function loadQueue() { try { const r = localStorage.getItem(QUEUE_KEY); return r ? JSON.parse(r) : []; } catch { return []; } }
+function saveQueue(q) { try { localStorage.setItem(QUEUE_KEY, JSON.stringify(q)); } catch {} }
+function addToQueue(op) { const q = loadQueue(); q.push({ ...op, ts: Date.now() }); saveQueue(q); }
+let _syncing = false;
+let _onSyncDone = null;
+
+async function flushQueue() {
+  if (_syncing) return;
+  const q = loadQueue();
+  if (q.length === 0) return;
+  if (!navigator.onLine) return;
+  _syncing = true;
+  const failed = [];
+  for (const op of q) {
+    const result = await sbRest(op.table, op.method, op.body, op.filter, op.prefer);
+    if (result === null) { failed.push(op); }
+  }
+  saveQueue(failed);
+  _syncing = false;
+  if (_onSyncDone) _onSyncDone(failed.length);
+}
+
+/* sbWrite: intenta escribir, si falla encola */
+async function sbWrite(table, method, body, filter, prefer) {
+  if (!navigator.onLine) {
+    addToQueue({ table, method, body, filter, prefer });
+    return "queued";
+  }
+  const result = await sbRest(table, method, body, filter, prefer);
+  if (result === null) {
+    addToQueue({ table, method, body, filter, prefer });
+    return "queued";
+  }
+  return result;
+}
+
+/* ============================================
    CONSTANTES Y UTILIDADES
    ============================================ */
 const CHANNELS = ["WhatsApp", "Booking", "Airbnb", "Directo", "Teléfono", "Otro"];
@@ -189,10 +229,16 @@ const NOTES_KEY = "tinoco_notes";
 function loadNotes() { try { const r = localStorage.getItem(NOTES_KEY); return r ? JSON.parse(r) : []; } catch { return []; } }
 function saveNotes(notes) { try { localStorage.setItem(NOTES_KEY, JSON.stringify(notes)); } catch {} }
 
+/* Cache para carga rápida */
+const CACHE_KEY = "tinoco_cache";
+function loadCache() { try { const r = localStorage.getItem(CACHE_KEY); return r ? JSON.parse(r) : null; } catch { return null; } }
+function saveCache(data) { try { localStorage.setItem(CACHE_KEY, JSON.stringify({ ...data, _ts: Date.now() })); } catch {} }
+
 const INV_KEY = "tinoco_inventory";
 const INV_ITEMS = ["toallas","sabanas","sobresabanas","fundas"];
 const INV_LABELS = {toallas:"🧺 Toallas",sabanas:"🛏️ Sábanas",sobresabanas:"🛌 Sobresábanas",fundas:"🫧 Fundas"};
-const INV_DEFAULT = () => ({stock:0,verified:false,verifiedBy:"",deliveries:[],ingresos:[]});
+const INV_HAS_SIZES = {sabanas:true,sobresabanas:true};
+const INV_DEFAULT = () => ({stock:0,stock15:0,stock2:0,confirmedBy:"",deliveries:[],ingresos:[]});
 function loadInventory() { try { const r = localStorage.getItem(INV_KEY); if (!r) return null; const d = JSON.parse(r); if (d._date !== TODAY) return null; return d; } catch { return null; } }
 function saveInventory(data) { try { localStorage.setItem(INV_KEY, JSON.stringify({ ...data, _date: TODAY })); } catch {} }
 
@@ -235,74 +281,109 @@ export default function App() {
 
   const staticLoaded = useRef(false);
 
+  /* Cargar cache inmediatamente para UI instantáneo */
+  const cacheLoaded = useRef(false);
+  useEffect(() => {
+    if (cacheLoaded.current) return;
+    cacheLoaded.current = true;
+    const c = loadCache();
+    if (c && c.users) {
+      setUsers(c.users); setTypes(c.types||[]); setRooms(c.rooms||[]); setRes(c.res||[]); setHols(c.hols||[]); setClnOverrides(c.cln||{});
+      setConnStatus("ok"); setLoading(false);
+    }
+  }, []);
+
   const loadAll = useCallback(async (forceAll = false) => {
     try {
       if (!staticLoaded.current || forceAll) {
-        setConnStatus("connecting");
+        if (!loadCache()) setConnStatus("connecting");
         const [u, t, r, rv, h, c] = await Promise.all([sbRest("users","GET",null,"select=*"),sbRest("room_types","GET",null,"select=*"),sbRest("rooms","GET",null,"select=*"),sbRest("reservations","GET",null,"select=*"),sbRest("holidays","GET",null,"select=*"),sbRest("cleaning_overrides","GET",null,"select=*")]);
         const anyOk = u || t || r || rv;
         if (anyOk) {
           setConnStatus("ok");
-          if (u) setUsers(u.map(dbToUser)); if (t) setTypes(t.map(dbToType)); if (r) setRooms(r.map(dbToRoom)); if (rv) setRes(rv.map(dbToRes)); if (h) setHols(h.map(dbToHol));
-          if (c) { const m = {}; c.forEach((row) => { m[row.override_key] = { key: row.override_key, roomId: row.room_id, status: row.status, by: row.done_by, at: row.done_at, user: row.registered_by }; }); setClnOverrides(m); }
+          const mu = u ? u.map(dbToUser) : []; const mt = t ? t.map(dbToType) : []; const mr = r ? r.map(dbToRoom) : []; const mrv = rv ? rv.map(dbToRes) : []; const mh = h ? h.map(dbToHol) : [];
+          const mc = {};
+          if (c) c.forEach((row) => { mc[row.override_key] = { key: row.override_key, roomId: row.room_id, status: row.status, by: row.done_by, at: row.done_at, user: row.registered_by }; });
+          if (u) setUsers(mu); if (t) setTypes(mt); if (r) setRooms(mr); if (rv) setRes(mrv); if (h) setHols(mh);
+          if (c) setClnOverrides(mc);
+          saveCache({ users: mu, types: mt, rooms: mr, res: mrv, hols: mh, cln: mc });
           staticLoaded.current = true;
         } else {
           const st = getSbStatus();
-          setConnStatus(st.waking ? "waking" : "error");
+          if (!loadCache()) setConnStatus(st.waking ? "waking" : "error");
         }
       } else {
         const [rv, c] = await Promise.all([sbRest("reservations","GET",null,"select=*"),sbRest("cleaning_overrides","GET",null,"select=*")]);
-        if (rv) setRes(rv.map(dbToRes));
-        if (c) { const m = {}; c.forEach((row) => { m[row.override_key] = { key: row.override_key, roomId: row.room_id, status: row.status, by: row.done_by, at: row.done_at, user: row.registered_by }; }); setClnOverrides(m); }
+        if (rv) { const mrv = rv.map(dbToRes); setRes(mrv); const cc = loadCache(); if (cc) saveCache({...cc, res: mrv}); }
+        if (c) { const mc = {}; c.forEach((row) => { mc[row.override_key] = { key: row.override_key, roomId: row.room_id, status: row.status, by: row.done_by, at: row.done_at, user: row.registered_by }; }); setClnOverrides(mc); const cc = loadCache(); if (cc) saveCache({...cc, cln: mc}); }
         if (rv || c) { setConnStatus("ok"); _sbStatus = { ..._sbStatus, ok: true, lastOk: Date.now() }; }
       }
-    } catch (e) { console.error("Load error:", e); setConnStatus("error"); }
+    } catch (e) { console.error("Load error:", e); if (!loadCache()) setConnStatus("error"); }
     setLoading(false);
   }, []);
 
   useEffect(() => {
     loadAll(true);
     startKeepAlive();
-    pollRef.current = setInterval(() => loadAll(false), 300000);
+    /* Flush queue on start if online */
+    if (navigator.onLine) flushQueue().then(() => setPendingOps(loadQueue().length));
+    pollRef.current = setInterval(() => { if (navigator.onLine) { loadAll(false); flushQueue().then(() => setPendingOps(loadQueue().length)); } }, 300000);
     return () => { clearInterval(pollRef.current); stopKeepAlive(); };
   }, [loadAll]);
 
   /* MEJORA: índice de reservas por roomId - se recalcula solo cuando cambia res */
   const resIndex = useMemo(() => buildResIndex(res), [res]);
 
-  /* CRUD con optimistic update + rollback en error */
+  /* Online/Offline detection + sync */
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const [pendingOps, setPendingOps] = useState(() => loadQueue().length);
+  useEffect(() => {
+    const goOnline = () => { setIsOnline(true); flushQueue().then(() => { setPendingOps(loadQueue().length); loadAll(false); }); };
+    const goOffline = () => { setIsOnline(false); if (!loadCache()) setConnStatus("offline"); else setConnStatus("offline"); };
+    window.addEventListener("online", goOnline);
+    window.addEventListener("offline", goOffline);
+    _onSyncDone = (remaining) => setPendingOps(remaining);
+    return () => { window.removeEventListener("online", goOnline); window.removeEventListener("offline", goOffline); _onSyncDone = null; };
+  }, [loadAll]);
+
+  /* Helper: actualiza cache local después de cambios */
+  const updateLocalCache = useCallback((key, updater) => {
+    const cc = loadCache();
+    if (cc) { cc[key] = updater(cc[key]); saveCache(cc); }
+  }, []);
+
+  /* CRUD con offline-first: optimistic local + sbWrite (encola si sin red) */
   const addReservation = useCallback(async (data) => {
     const nr = { ...data, id: genId(), created: TODAY, createdBy: curUser.name };
-    setRes((p) => [...p, nr]);
-    const result = await sbRest("reservations", "POST", [resToDb(nr)]);
-    if (!result) { setRes((p) => p.filter(r => r.id !== nr.id)); alert("Error al guardar. Reintentando..."); }
-  }, [curUser]);
+    setRes((p) => { const n = [...p, nr]; updateLocalCache("res", () => n); return n; });
+    const r = await sbWrite("reservations", "POST", [resToDb(nr)]);
+    if (r === "queued") setPendingOps(loadQueue().length);
+  }, [curUser, updateLocalCache]);
 
   const updateReservation = useCallback(async (id, data) => {
-    let prev;
-    setRes((p) => { prev = p.find(r => r.id === id); return p.map((r) => r.id === id ? { ...r, ...data } : r); });
+    setRes((p) => { const n = p.map((r) => r.id === id ? { ...r, ...data } : r); updateLocalCache("res", () => n); return n; });
     const d = resToDb(data); delete d.id;
-    const result = await sbRest("reservations", "PATCH", d, "id=eq." + id);
-    if (!result && prev) { setRes((p) => p.map(r => r.id === id ? prev : r)); alert("Error al actualizar."); }
-  }, []);
+    const r = await sbWrite("reservations", "PATCH", d, "id=eq." + id);
+    if (r === "queued") setPendingOps(loadQueue().length);
+  }, [updateLocalCache]);
 
   const deleteReservation = useCallback(async (id) => {
-    let prev;
-    setRes((p) => { prev = p.find(r => r.id === id); return p.filter((r) => r.id !== id); });
-    const result = await sbRest("reservations", "DELETE", null, "id=eq." + id);
-    if (!result && prev) { setRes((p) => [...p, prev]); alert("Error al eliminar."); }
-  }, []);
+    setRes((p) => { const n = p.filter((r) => r.id !== id); updateLocalCache("res", () => n); return n; });
+    const r = await sbWrite("reservations", "DELETE", null, "id=eq." + id);
+    if (r === "queued") setPendingOps(loadQueue().length);
+  }, [updateLocalCache]);
 
-  const addRoom = useCallback(async (data) => { const room = { ...data, photos: [], obs: [] }; setRooms((p) => [...p, room]); await sbRest("rooms", "POST", [{ id: room.id, name: room.name, type_id: room.type, floor: room.floor, photos: "[]", observations: "[]" }]); }, []);
-  const updateRoom = useCallback(async (id, data) => { setRooms((p) => p.map((r) => r.id === id ? data : r)); await sbRest("rooms", "PATCH", { name: data.name, type_id: data.type, floor: data.floor, photos: JSON.stringify(data.photos || []), observations: JSON.stringify(data.obs || []) }, "id=eq." + id); }, []);
-  const deleteRoom = useCallback(async (id) => { setRooms((p) => p.filter((r) => r.id !== id)); await sbRest("rooms", "DELETE", null, "id=eq." + id); }, []);
-  const addType = useCallback(async (data) => { setTypes((p) => [...p, data]); await sbRest("room_types", "POST", [{ id: data.id, name: data.name, base_price: data.base, high_price: data.high, capacity: data.cap, beds_plaza_media: data.beds15, beds_dos_plazas: data.beds2 }]); }, []);
-  const updateType = useCallback(async (id, data) => { setTypes((p) => p.map((t) => t.id === id ? { ...t, ...data } : t)); await sbRest("room_types", "PATCH", { name: data.name, base_price: data.base, high_price: data.high, capacity: data.cap, beds_plaza_media: data.beds15, beds_dos_plazas: data.beds2 }, "id=eq." + id); }, []);
-  const deleteType = useCallback(async (id) => { if (rooms.some((r) => r.type === id) || res.some((r) => r.roomType === id)) return alert("No se puede eliminar: tipo en uso."); setTypes((p) => p.filter((t) => t.id !== id)); await sbRest("room_types", "DELETE", null, "id=eq." + id); }, [rooms, res]);
-  const addHoliday = useCallback(async (data) => { setHols((p) => [...p, data]); await sbRest("holidays", "POST", [{ id: data.id, name: data.name, start_date: data.s, end_date: data.e, icon: data.icon }]); }, []);
-  const updateHoliday = useCallback(async (id, data) => { setHols((p) => p.map((h) => h.id === id ? { ...h, ...data } : h)); await sbRest("holidays", "PATCH", { name: data.name, start_date: data.s, end_date: data.e, icon: data.icon }, "id=eq." + id); }, []);
-  const deleteHoliday = useCallback(async (id) => { setHols((p) => p.filter((h) => h.id !== id)); await sbRest("holidays", "DELETE", null, "id=eq." + id); }, []);
-  const markCleaningDone = useCallback(async (key, roomId, by, userName) => { setClnOverrides((p) => ({ ...p, [key]: { key, roomId, status: "limpio", by, at: new Date().toISOString(), user: userName } })); await sbRest("cleaning_overrides", "POST", [{ override_key: key, room_id: roomId, status: "limpio", done_by: by, done_at: new Date().toISOString(), registered_by: userName }], "", "return=representation,resolution=merge-duplicates"); }, []);
+  const addRoom = useCallback(async (data) => { const room = { ...data, photos: [], obs: [] }; setRooms((p) => { const n = [...p, room]; updateLocalCache("rooms", () => n); return n; }); const r = await sbWrite("rooms", "POST", [{ id: room.id, name: room.name, type_id: room.type, floor: room.floor, photos: "[]", observations: "[]" }]); if (r === "queued") setPendingOps(loadQueue().length); }, [updateLocalCache]);
+  const updateRoom = useCallback(async (id, data) => { setRooms((p) => { const n = p.map((r) => r.id === id ? data : r); updateLocalCache("rooms", () => n); return n; }); const r = await sbWrite("rooms", "PATCH", { name: data.name, type_id: data.type, floor: data.floor, photos: JSON.stringify(data.photos || []), observations: JSON.stringify(data.obs || []) }, "id=eq." + id); if (r === "queued") setPendingOps(loadQueue().length); }, [updateLocalCache]);
+  const deleteRoom = useCallback(async (id) => { setRooms((p) => { const n = p.filter((r) => r.id !== id); updateLocalCache("rooms", () => n); return n; }); const r = await sbWrite("rooms", "DELETE", null, "id=eq." + id); if (r === "queued") setPendingOps(loadQueue().length); }, [updateLocalCache]);
+  const addType = useCallback(async (data) => { setTypes((p) => { const n = [...p, data]; updateLocalCache("types", () => n); return n; }); const r = await sbWrite("room_types", "POST", [{ id: data.id, name: data.name, base_price: data.base, high_price: data.high, capacity: data.cap, beds_plaza_media: data.beds15, beds_dos_plazas: data.beds2 }]); if (r === "queued") setPendingOps(loadQueue().length); }, [updateLocalCache]);
+  const updateType = useCallback(async (id, data) => { setTypes((p) => { const n = p.map((t) => t.id === id ? { ...t, ...data } : t); updateLocalCache("types", () => n); return n; }); const r = await sbWrite("room_types", "PATCH", { name: data.name, base_price: data.base, high_price: data.high, capacity: data.cap, beds_plaza_media: data.beds15, beds_dos_plazas: data.beds2 }, "id=eq." + id); if (r === "queued") setPendingOps(loadQueue().length); }, [updateLocalCache]);
+  const deleteType = useCallback(async (id) => { if (rooms.some((r) => r.type === id) || res.some((r) => r.roomType === id)) return alert("No se puede eliminar: tipo en uso."); setTypes((p) => { const n = p.filter((t) => t.id !== id); updateLocalCache("types", () => n); return n; }); const r = await sbWrite("room_types", "DELETE", null, "id=eq." + id); if (r === "queued") setPendingOps(loadQueue().length); }, [rooms, res, updateLocalCache]);
+  const addHoliday = useCallback(async (data) => { setHols((p) => [...p, data]); const r = await sbWrite("holidays", "POST", [{ id: data.id, name: data.name, start_date: data.s, end_date: data.e, icon: data.icon }]); if (r === "queued") setPendingOps(loadQueue().length); }, []);
+  const updateHoliday = useCallback(async (id, data) => { setHols((p) => p.map((h) => h.id === id ? { ...h, ...data } : h)); const r = await sbWrite("holidays", "PATCH", { name: data.name, start_date: data.s, end_date: data.e, icon: data.icon }, "id=eq." + id); if (r === "queued") setPendingOps(loadQueue().length); }, []);
+  const deleteHoliday = useCallback(async (id) => { setHols((p) => p.filter((h) => h.id !== id)); const r = await sbWrite("holidays", "DELETE", null, "id=eq." + id); if (r === "queued") setPendingOps(loadQueue().length); }, []);
+  const markCleaningDone = useCallback(async (key, roomId, by, userName) => { setClnOverrides((p) => ({ ...p, [key]: { key, roomId, status: "limpio", by, at: new Date().toISOString(), user: userName } })); const r = await sbWrite("cleaning_overrides", "POST", [{ override_key: key, room_id: roomId, status: "limpio", done_by: by, done_at: new Date().toISOString(), registered_by: userName }], "", "return=representation,resolution=merge-duplicates"); if (r === "queued") setPendingOps(loadQueue().length); }, []);
+  const undoCleaningDone = useCallback(async (key) => { setClnOverrides((p) => { const n = { ...p }; delete n[key]; return n; }); const r = await sbWrite("cleaning_overrides", "DELETE", null, "override_key=eq." + key); if (r === "queued") setPendingOps(loadQueue().length); }, []);
 
   const conflicts = useMemo(() => {
     const result = []; const active = res.filter((r) => r.state !== "Cancelado" && r.state !== "Finalizado");
@@ -324,17 +405,17 @@ export default function App() {
   return (
     <div className="app">
       <header className="hdr">
-        <div className="hdr-l"><span className="hdr-ico">🏨</span><div><h1 className="hdr-t">Tinoco Apart Hotel</h1><p className="hdr-s">Sistema de Gestión — {connStatus === "ok" ? "En línea" : connStatus === "waking" ? "⏳ Reconectando..." : connStatus === "error" ? "⚠️ Sin conexión" : "Conectando..."}</p></div></div>
+        <div className="hdr-l"><span className="hdr-ico">🏨</span><div><h1 className="hdr-t">Tinoco Apart Hotel</h1><p className="hdr-s">Sistema de Gestión — {!isOnline ? "📴 Sin internet" + (pendingOps > 0 ? ` (${pendingOps} pendiente${pendingOps>1?"s":""})` : " (modo local)") : connStatus === "ok" ? (pendingOps > 0 ? `⏳ Sincronizando ${pendingOps}...` : "En línea") : connStatus === "waking" ? "⏳ Reconectando..." : connStatus === "error" ? "⚠️ Sin conexión" : "Conectando..."}</p></div></div>
         <nav className="hdr-nav">
           {nav.map((n2) => (<button key={n2.id} className={"nv" + (pg === n2.id ? " ac" : "") + (n2.id === "avisos" && conflicts.length > 0 && pg !== "avisos" ? " nv-warn" : "")} onClick={() => setPg(n2.id)} style={n2.id === "avisos" && conflicts.length > 0 ? { color: "#ff6b6b" } : undefined}><span className="ni">{n2.i}</span>{n2.l}</button>))}
-          <div className="hdr-user"><span className="hdr-uname">👤 {curUser.name}</span><span style={{ fontSize: 8, color: "#4caf50", marginLeft: 4 }}>●</span><button className="hdr-logout" onClick={()=>loadAll(true)} title="Sincronizar datos">🔄</button><button className="hdr-logout" onClick={handleLogout}>Salir</button></div>
+          <div className="hdr-user"><span className="hdr-uname">👤 {curUser.name}</span><span style={{ fontSize: 8, color: isOnline ? "#4caf50" : "#e67e22", marginLeft: 4 }}>●</span>{pendingOps>0&&<span style={{fontSize:10,background:"#e67e22",color:"#fff",padding:"1px 6px",borderRadius:10,marginLeft:4}}>{pendingOps}</span>}<button className="hdr-logout" onClick={()=>{flushQueue().then(()=>{setPendingOps(loadQueue().length);loadAll(true);});}} title="Sincronizar datos">🔄</button><button className="hdr-logout" onClick={handleLogout}>Salir</button></div>
         </nav>
       </header>
       <main className="cnt">
         {pg === "reg" && <PgReg res={res} resIndex={resIndex} deleteReservation={deleteReservation} rooms={rooms} types={types} setModal={setModal} curUser={curUser} />}
         {pg === "disp" && <PgDisp rooms={rooms} types={types} res={res} resIndex={resIndex} hols={hols} calD={calD} setCalD={setCalD} />}
         {pg === "hab" && <PgHab rooms={rooms} updateRoom={updateRoom} deleteRoom={deleteRoom} types={types} addType={addType} updateType={updateType} deleteType={deleteType} sel={selR} setSel={setSelR} setModal={setModal} />}
-        {pg === "lim" && <PgLim rooms={rooms} types={types} res={res} cln={clnOverrides} markCleaningDone={markCleaningDone} curUser={curUser} users={users} />}
+        {pg === "lim" && <PgLim rooms={rooms} types={types} res={res} cln={clnOverrides} markCleaningDone={markCleaningDone} undoCleaningDone={undoCleaningDone} curUser={curUser} users={users} />}
         {pg === "avisos" && <PgAvisos conflicts={conflicts} rooms={rooms} types={types} setModal={setModal} setPg={setPg} curUser={curUser} />}
       </main>
       {modal?.t === "res" && <MdlRes data={modal.d} rooms={rooms} types={types} curUser={curUser} users={users} onSave={(d) => { if (modal.d) updateReservation(modal.d.id, { ...modal.d, ...d }); else addReservation(d); setModal(null); }} onClose={() => setModal(null)} />}
@@ -641,7 +722,7 @@ function MdlAddRm({ types, onSave, onClose }) {
 /* ============================================
    PgLim - Limpieza + Toallas (con memo)
    ============================================ */
-const PgLim = memo(function PgLim({ rooms, types, res, cln, markCleaningDone, curUser, users }) {
+const PgLim = memo(function PgLim({ rooms, types, res, cln, markCleaningDone, undoCleaningDone, curUser, users }) {
   const [rn, sRn] = useState({}); const getRn = (k) => rn[k]||""; const setRn = (k,v) => sRn(p=>({...p,[k]:v}));
   const [invData, setInvData] = useState(() => {
     const saved = loadInventory();
@@ -649,11 +730,12 @@ const PgLim = memo(function PgLim({ rooms, types, res, cln, markCleaningDone, cu
     const d = {}; INV_ITEMS.forEach(k => { d[k] = INV_DEFAULT(); }); return d;
   });
   const [activeInv, setActiveInv] = useState("toallas");
-  const [tAuthM, setTAuthM] = useState(false); const [tAuthU, setTAuthU] = useState(""); const [tAuthP, setTAuthP] = useState(""); const [tAuthE, setTAuthE] = useState("");
-  const [newDel, setNewDel] = useState({ roomId: "", qty: "", registeredBy: "" });
-  const [newIng, setNewIng] = useState({ qty: "", note: "", registeredBy: "" });
+  const [newDel, setNewDel] = useState({ roomId: "", qty: "", size: "", registeredBy: "" });
+  const [newIng, setNewIng] = useState({ qty: "", size: "", note: "", registeredBy: "" });
+  const [stockBy, setStockBy] = useState("");
   useEffect(() => { saveInventory(invData); }, [invData]);
 
+  const hasSizes = !!INV_HAS_SIZES[activeInv];
   const cur = invData[activeInv] || INV_DEFAULT();
   const setCur = (fn) => setInvData(p => ({ ...p, [activeInv]: typeof fn === "function" ? fn(p[activeInv] || INV_DEFAULT()) : fn }));
 
@@ -695,15 +777,19 @@ const PgLim = memo(function PgLim({ rooms, types, res, cln, markCleaningDone, cu
   }, [itemNeeds, cur.deliveries]);
 
   const totalDel = cur.deliveries.reduce((s, d) => s + d.qty, 0);
-  const totalIngreso = (cur.ingresos || []).reduce((s, d) => s + d.qty, 0);
+  const totalIng = (cur.ingresos || []).reduce((s, d) => s + d.qty, 0);
+  const totalStock = hasSizes ? (cur.stock15||0) + (cur.stock2||0) : cur.stock;
   const getEff = (roomId, autoSt) => { const ov = cln[roomId]; if (ov && ov.status === "limpio" && toDS(ov.at) === TODAY) return { status: "limpio", by: ov.by, user: ov.user||"" }; return { status: autoSt, by: null, user: "" }; };
   const markClean = (roomId) => { const name = getRn("c_"+roomId).trim(); if (!name) return alert("Nombre requerido"); markCleaningDone(roomId, roomId, name, curUser.name); setRn("c_"+roomId, ""); };
+  const undoClean = (roomId) => { if (confirm("¿Desmarcar limpieza de esta habitación?")) undoCleaningDone(roomId); };
   const markVerify = (roomId) => { const name = getRn("v_"+roomId).trim(); if (!name) return alert("Nombre requerido"); markCleaningDone(roomId+"_verify", roomId, name, curUser.name); setRn("v_"+roomId, ""); };
+  const undoVerify = (roomId) => { if (confirm("¿Desmarcar verificación?")) undoCleaningDone(roomId+"_verify"); };
   const stInfo = { limpio: { label: "Limpio", color: "#27ae60", icon: "🟢" }, parcial: { label: "Parcial", color: "#e67e22", icon: "🟠" }, general: { label: "General", color: "#3498db", icon: "🔵" } };
-  const confirmTowelAuth = () => { const found = (users||[]).find(x => x.user === tAuthU && x.pass === tAuthP); if (!found) { setTAuthE("Credenciales incorrectas"); return; } setCur(p => ({ ...p, verified: true, verifiedBy: found.name })); setTAuthM(false); };
-  const addDelivery = () => { const qty = Number(newDel.qty); if (!newDel.roomId || !qty || qty <= 0) return alert("Completa hab. y cantidad"); if (!newDel.registeredBy.trim()) return alert("Indica quién registra"); setCur(p => ({ ...p, deliveries: [...p.deliveries, { roomId: newDel.roomId, qty, registeredBy: newDel.registeredBy.trim(), time: new Date().toLocaleTimeString("es-PE", { hour: "2-digit", minute: "2-digit" }) }] })); setNewDel({ roomId: "", qty: "", registeredBy: "" }); };
+
+  const confirmStock = () => { if (!stockBy.trim()) return alert("Indica quién confirma"); setCur(p => ({ ...p, confirmedBy: stockBy.trim() })); setStockBy(""); };
+  const addDelivery = () => { const qty = Number(newDel.qty); if (!newDel.roomId || !qty || qty <= 0) return alert("Completa hab. y cantidad"); if (hasSizes && !newDel.size) return alert("Selecciona tamaño"); if (!newDel.registeredBy.trim()) return alert("Indica quién registra"); setCur(p => ({ ...p, deliveries: [...p.deliveries, { roomId: newDel.roomId, qty, size: newDel.size||"", registeredBy: newDel.registeredBy.trim(), time: new Date().toLocaleTimeString("es-PE", { hour: "2-digit", minute: "2-digit" }) }] })); setNewDel({ roomId: "", qty: "", size: "", registeredBy: "" }); };
   const rmDelivery = (i) => setCur(p => ({ ...p, deliveries: p.deliveries.filter((_, j) => j !== i) }));
-  const addIngreso = () => { const qty = Number(newIng.qty); if (!qty || qty <= 0) return alert("Ingresa cantidad"); if (!newIng.registeredBy.trim()) return alert("Indica quién registra"); setCur(p => ({ ...p, ingresos: [...(p.ingresos||[]), { qty, note: newIng.note, registeredBy: newIng.registeredBy.trim(), time: new Date().toLocaleTimeString("es-PE", { hour: "2-digit", minute: "2-digit" }) }] })); setNewIng({ qty: "", note: "", registeredBy: "" }); };
+  const addIngreso = () => { const qty = Number(newIng.qty); if (!qty || qty <= 0) return alert("Ingresa cantidad"); if (hasSizes && !newIng.size) return alert("Selecciona tamaño"); if (!newIng.registeredBy.trim()) return alert("Indica quién registra"); setCur(p => ({ ...p, ingresos: [...(p.ingresos||[]), { qty, size: newIng.size||"", note: newIng.note, registeredBy: newIng.registeredBy.trim(), time: new Date().toLocaleTimeString("es-PE", { hour: "2-digit", minute: "2-digit" }) }] })); setNewIng({ qty: "", size: "", note: "", registeredBy: "" }); };
   const rmIngreso = (i) => setCur(p => ({ ...p, ingresos: (p.ingresos||[]).filter((_, j) => j !== i) }));
   const invLabel = INV_LABELS[activeInv] || activeInv;
 
@@ -716,7 +802,7 @@ const PgLim = memo(function PgLim({ rooms, types, res, cln, markCleaningDone, cu
       {cleanList.length===0?<div className="crd" style={{textAlign:"center",padding:40,color:"#999"}}>No hay limpieza hoy</div>:(
         <div className="tw"><table className="tb"><thead><tr><th>Hab.</th><th>Tipo</th><th>Huésped</th><th>Check-out</th><th>Estado</th><th>Resp.</th><th>Acción</th></tr></thead><tbody>
           {cleanList.map(({room,res:rv,status,type:tp2})=>{const eff=getEff(room.id,status);const inf=stInfo[eff.status];return(
-            <tr key={room.id}><td className="trm">{room.name}</td><td>{tp2?.name}</td><td className="tgst">{rv.guest}</td><td>{fmtDT(rv.checkout)}</td><td><span className="lim-badge" style={{background:inf.color+"22",color:inf.color,borderColor:inf.color+"44"}}>{inf.icon} {inf.label}</span></td><td style={{fontSize:12}}>{eff.by?<span>✅ {eff.by}</span>:"—"}</td><td>{eff.status!=="limpio"?(<div style={{display:"flex",gap:4,alignItems:"center"}}><input style={{width:100,fontSize:11,padding:"4px 6px"}} placeholder="Responsable..." value={getRn("c_"+room.id)} onChange={e=>setRn("c_"+room.id,e.target.value)} onKeyDown={e=>e.key==="Enter"&&markClean(room.id)}/><button className="ba bsm" onClick={()=>markClean(room.id)}>✓</button></div>):<span style={{color:"#27ae60",fontWeight:600,fontSize:12}}>✅</span>}</td></tr>
+            <tr key={room.id}><td className="trm">{room.name}</td><td>{tp2?.name}</td><td className="tgst">{rv.guest}</td><td>{fmtDT(rv.checkout)}</td><td><span className="lim-badge" style={{background:inf.color+"22",color:inf.color,borderColor:inf.color+"44"}}>{inf.icon} {inf.label}</span></td><td style={{fontSize:12}}>{eff.by?<span>✅ {eff.by}</span>:"—"}</td><td>{eff.status!=="limpio"?(<div style={{display:"flex",gap:4,alignItems:"center"}}><input style={{width:100,fontSize:11,padding:"4px 6px"}} placeholder="Responsable..." value={getRn("c_"+room.id)} onChange={e=>setRn("c_"+room.id,e.target.value)} onKeyDown={e=>e.key==="Enter"&&markClean(room.id)}/><button className="ba bsm" onClick={()=>markClean(room.id)}>✓</button></div>):(<div style={{display:"flex",gap:4,alignItems:"center"}}><span style={{color:"#27ae60",fontWeight:600,fontSize:12}}>✅</span><button className="ab" style={{fontSize:11}} onClick={()=>undoClean(room.id)} title="Deshacer">↩️</button></div>)}</td></tr>
           );})}
         </tbody></table></div>
       )}
@@ -725,7 +811,7 @@ const PgLim = memo(function PgLim({ rooms, types, res, cln, markCleaningDone, cu
         <h3 style={{fontSize:15,marginBottom:12,color:"#6B3410"}}>🔍 Verificar — Ingresos hoy</h3>
         <div className="tw"><table className="tb"><thead><tr><th>Hab.</th><th>Tipo</th><th>Huésped</th><th>Check-in</th><th>Estado</th><th>Resp.</th><th>Acción</th></tr></thead><tbody>
           {verifyList.map(({room,res:rv,type:tp2})=>{const ov=cln[room.id+"_verify"];const ok=ov&&ov.status==="limpio"&&toDS(ov.at)===TODAY;return(
-            <tr key={room.id}><td className="trm">{room.name}</td><td>{tp2?.name}</td><td className="tgst">{rv.guest}</td><td>{fmtDT(rv.checkin)}</td><td>{ok?<span style={{color:"#27ae60",fontWeight:600,fontSize:12}}>🟢 OK</span>:<span style={{color:"#e67e22",fontWeight:600,fontSize:12}}>⚠️ Pendiente</span>}</td><td style={{fontSize:12}}>{ok?<span>✅ {ov.by}</span>:"—"}</td><td>{!ok?(<div style={{display:"flex",gap:4,alignItems:"center"}}><input style={{width:100,fontSize:11,padding:"4px 6px"}} placeholder="Responsable..." value={getRn("v_"+room.id)} onChange={e=>setRn("v_"+room.id,e.target.value)} onKeyDown={e=>e.key==="Enter"&&markVerify(room.id)}/><button className="ba bsm" onClick={()=>markVerify(room.id)}>✓</button></div>):<span style={{color:"#27ae60",fontWeight:600,fontSize:12}}>✅</span>}</td></tr>
+            <tr key={room.id}><td className="trm">{room.name}</td><td>{tp2?.name}</td><td className="tgst">{rv.guest}</td><td>{fmtDT(rv.checkin)}</td><td>{ok?<span style={{color:"#27ae60",fontWeight:600,fontSize:12}}>🟢 OK</span>:<span style={{color:"#e67e22",fontWeight:600,fontSize:12}}>⚠️ Pendiente</span>}</td><td style={{fontSize:12}}>{ok?<span>✅ {ov.by}</span>:"—"}</td><td>{!ok?(<div style={{display:"flex",gap:4,alignItems:"center"}}><input style={{width:100,fontSize:11,padding:"4px 6px"}} placeholder="Responsable..." value={getRn("v_"+room.id)} onChange={e=>setRn("v_"+room.id,e.target.value)} onKeyDown={e=>e.key==="Enter"&&markVerify(room.id)}/><button className="ba bsm" onClick={()=>markVerify(room.id)}>✓</button></div>):(<div style={{display:"flex",gap:4,alignItems:"center"}}><span style={{color:"#27ae60",fontWeight:600,fontSize:12}}>✅</span><button className="ab" style={{fontSize:11}} onClick={()=>undoVerify(room.id)} title="Deshacer">↩️</button></div>)}</td></tr>
           );})}
         </tbody></table></div>
       </div>)}
@@ -734,66 +820,86 @@ const PgLim = memo(function PgLim({ rooms, types, res, cln, markCleaningDone, cu
       <div className="crd" style={{marginTop:20}}>
         <h3 style={{fontSize:15,marginBottom:12,color:"#6B3410"}}>📦 Inventario — Hoy</h3>
         <div style={{display:"flex",gap:6,marginBottom:14,flexWrap:"wrap"}}>
-          {INV_ITEMS.map(k=>(<button key={k} onClick={()=>setActiveInv(k)} style={{padding:"6px 14px",borderRadius:20,border:activeInv===k?"2px solid #6B3410":"1px solid #ccc",background:activeInv===k?"#6B3410":"#fff",color:activeInv===k?"#fff":"#333",fontSize:12,fontWeight:activeInv===k?700:400,cursor:"pointer",transition:"all .15s"}}>{INV_LABELS[k]}</button>))}
+          {INV_ITEMS.map(k=>(<button key={k} onClick={()=>{setActiveInv(k);setNewDel({roomId:"",qty:"",size:"",registeredBy:""});setNewIng({qty:"",size:"",note:"",registeredBy:""});}} style={{padding:"6px 14px",borderRadius:20,border:activeInv===k?"2px solid #6B3410":"1px solid #ccc",background:activeInv===k?"#6B3410":"#fff",color:activeInv===k?"#fff":"#333",fontSize:12,fontWeight:activeInv===k?700:400,cursor:"pointer",transition:"all .15s"}}>{INV_LABELS[k]}</button>))}
         </div>
 
-        <div style={{background:cur.verified?"#e8f5e9":"#fff8e1",padding:12,borderRadius:8,border:"1px solid "+(cur.verified?"#a5d6a7":"#ffe082"),marginBottom:12}}>
-          <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap"}}>
-            <span style={{fontSize:13,fontWeight:600}}>Stock inicial ({invLabel}):</span>
-            {cur.verified?(
-              <><span style={{fontSize:18,fontWeight:700,color:"#2e7d32"}}>{cur.stock} ✅ <span style={{fontSize:11,fontWeight:400}}>por {cur.verifiedBy}</span></span>
-              <button className="bc bsm" style={{marginLeft:8}} onClick={()=>setCur(p=>({...p,verified:false,verifiedBy:""}))}>✏️ Modificar</button></>
-            ):(
-              <><input type="number" min={0} value={cur.stock} onChange={e=>setCur(p=>({...p,stock:Number(e.target.value)||0}))} style={{width:80}}/><button className="ba bsm" onClick={()=>{setTAuthM(true);setTAuthU("");setTAuthP("");setTAuthE("");}}>🔐 Validar</button></>
-            )}
-          </div>
-          {cur.verified&&<p style={{fontSize:11,color:"#666",marginTop:4}}>Stock: {cur.stock} · Ingresos: {totalIngreso} · Entregadas: {totalDel} · Disponibles: {cur.stock + totalIngreso - totalDel}</p>}
+        {/* STOCK INICIAL - sin autenticación */}
+        <div style={{background:cur.confirmedBy?"#e8f5e9":"#fff8e1",padding:12,borderRadius:8,border:"1px solid "+(cur.confirmedBy?"#a5d6a7":"#ffe082"),marginBottom:12}}>
+          <div style={{fontSize:13,fontWeight:600,marginBottom:8}}>Stock inicial ({invLabel}):</div>
+          {hasSizes ? (
+            <div style={{display:"flex",gap:12,flexWrap:"wrap",alignItems:"flex-end",marginBottom:8}}>
+              <div className="fld" style={{width:120}}><label>1½ Plaza</label><input type="number" min={0} value={cur.stock15||0} onChange={e=>setCur(p=>({...p,stock15:Number(e.target.value)||0}))} /></div>
+              <div className="fld" style={{width:120}}><label>2 Plazas</label><input type="number" min={0} value={cur.stock2||0} onChange={e=>setCur(p=>({...p,stock2:Number(e.target.value)||0}))} /></div>
+              <span style={{fontSize:13,fontWeight:700,color:"#6B3410",paddingBottom:6}}>Total: {(cur.stock15||0)+(cur.stock2||0)}</span>
+            </div>
+          ) : (
+            <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:8}}>
+              <input type="number" min={0} value={cur.stock} onChange={e=>setCur(p=>({...p,stock:Number(e.target.value)||0}))} style={{width:80}}/>
+            </div>
+          )}
+          {cur.confirmedBy ? (
+            <div style={{display:"flex",gap:8,alignItems:"center"}}>
+              <span style={{fontSize:12,color:"#2e7d32",fontWeight:600}}>✅ Confirmado por {cur.confirmedBy}</span>
+              <button className="bc bsm" style={{fontSize:11}} onClick={()=>setCur(p=>({...p,confirmedBy:""}))}>✏️ Modificar</button>
+            </div>
+          ) : (
+            <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+              <input value={stockBy} onChange={e=>setStockBy(e.target.value)} placeholder="¿Quién confirma?" style={{width:150,fontSize:12,padding:"5px 8px"}}/>
+              <button className="ba bsm" onClick={confirmStock}>✅ Confirmar stock</button>
+            </div>
+          )}
         </div>
-        {cur.verified&&(<>
-          {/* INGRESOS DEL DÍA */}
-          <div style={{background:"#e3f2fd",padding:12,borderRadius:8,border:"1px solid #90caf9",marginBottom:12}}>
-            <h4 style={{fontSize:13,fontWeight:700,marginBottom:8,color:"#1565c0"}}>📥 Ingresos del Día <span style={{fontWeight:400,fontSize:11,color:"#666"}}>(recibidos durante el día)</span></h4>
-            <div style={{display:"flex",gap:8,marginBottom:8,flexWrap:"wrap",alignItems:"flex-end"}}>
-              <div className="fld" style={{width:80}}><label>Cant.</label><input type="number" min={1} value={newIng.qty} onChange={e=>setNewIng(p=>({...p,qty:e.target.value}))}/></div>
-              <div className="fld" style={{flex:1,minWidth:100}}><label>Nota (opcional)</label><input value={newIng.note} onChange={e=>setNewIng(p=>({...p,note:e.target.value}))} placeholder="Ej: Lavandería entregó"/></div>
-              <div className="fld" style={{width:120}}><label>Registra</label><input value={newIng.registeredBy} onChange={e=>setNewIng(p=>({...p,registeredBy:e.target.value}))} placeholder="¿Quién registra?"/></div>
-              <button className="ba bsm" onClick={addIngreso}>+ Registrar</button>
-            </div>
-            {cur.ingresos&&cur.ingresos.length>0?(
-              <div className="tw" style={{marginBottom:8}}><table className="tb"><thead><tr><th>Cant.</th><th>Nota</th><th>Registró</th><th>Hora</th><th></th></tr></thead><tbody>{cur.ingresos.map((ing,i)=>(<tr key={i}><td style={{fontWeight:700,color:"#1565c0"}}>{ing.qty}</td><td style={{fontSize:11}}>{ing.note||"—"}</td><td style={{fontSize:11}}>{ing.registeredBy||"—"}</td><td style={{fontSize:11}}>{ing.time}</td><td><button className="ab" onClick={()=>rmIngreso(i)}>🗑️</button></td></tr>))}</tbody></table></div>
-            ):(<p style={{fontSize:12,color:"#999",marginBottom:4}}>Sin ingresos aún</p>)}
-            <div style={{fontSize:12,fontWeight:600,color:"#1565c0"}}>Total ingresos: {totalIngreso}</div>
-          </div>
 
-          <h4 style={{fontSize:13,fontWeight:700,marginBottom:8}}>📦 Entregas — {invLabel}</h4>
-          <div style={{display:"flex",gap:8,marginBottom:10,flexWrap:"wrap",alignItems:"flex-end"}}>
-            <div className="fld" style={{width:120}}><label>Hab.</label><select value={newDel.roomId} onChange={e=>setNewDel(p=>({...p,roomId:e.target.value}))}><option value="">—</option>{rooms.slice().sort((a,b)=>a.name.localeCompare(b.name,undefined,{numeric:true})).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select></div>
-            <div className="fld" style={{width:80}}><label>Cant.</label><input type="number" min={1} value={newDel.qty} onChange={e=>setNewDel(p=>({...p,qty:e.target.value}))}/></div>
-            <div className="fld" style={{width:120}}><label>Registra</label><input value={newDel.registeredBy} onChange={e=>setNewDel(p=>({...p,registeredBy:e.target.value}))} placeholder="¿Quién registra?"/></div>
-            <button className="ba bsm" onClick={addDelivery}>+ Entregar</button>
+        {/* INGRESOS DEL DÍA */}
+        <div style={{background:"#e3f2fd",padding:12,borderRadius:8,border:"1px solid #90caf9",marginBottom:12}}>
+          <h4 style={{fontSize:13,fontWeight:700,marginBottom:8,color:"#1565c0"}}>📥 Ingresos del Día</h4>
+          <div style={{display:"flex",gap:8,marginBottom:8,flexWrap:"wrap",alignItems:"flex-end"}}>
+            <div className="fld" style={{width:70}}><label>Cant.</label><input type="number" min={1} value={newIng.qty} onChange={e=>setNewIng(p=>({...p,qty:e.target.value}))}/></div>
+            {hasSizes&&<div className="fld" style={{width:100}}><label>Tamaño</label><select value={newIng.size} onChange={e=>setNewIng(p=>({...p,size:e.target.value}))}><option value="">—</option><option value="1.5">1½ Plaza</option><option value="2">2 Plazas</option></select></div>}
+            <div className="fld" style={{flex:1,minWidth:90}}><label>Nota</label><input value={newIng.note} onChange={e=>setNewIng(p=>({...p,note:e.target.value}))} placeholder="Opcional"/></div>
+            <div className="fld" style={{width:110}}><label>Registra</label><input value={newIng.registeredBy} onChange={e=>setNewIng(p=>({...p,registeredBy:e.target.value}))} placeholder="¿Quién?"/></div>
+            <button className="ba bsm" onClick={addIngreso}>+</button>
           </div>
-          {cur.deliveries.length>0&&(<div className="tw" style={{marginBottom:12}}><table className="tb"><thead><tr><th>Hab.</th><th>Cant.</th><th>Registró</th><th>Hora</th><th></th></tr></thead><tbody>{cur.deliveries.map((d,i)=>(<tr key={i}><td className="trm">{d.roomId}</td><td>{d.qty}</td><td style={{fontSize:11}}>{d.registeredBy||"—"}</td><td style={{fontSize:11}}>{d.time}</td><td><button className="ab" onClick={()=>rmDelivery(i)}>🗑️</button></td></tr>))}</tbody></table></div>)}
-          {cur.deliveries.length===0&&<p style={{fontSize:12,color:"#999",marginBottom:12}}>Sin entregas aún</p>}
-          <div style={{background:"#f9f7f4",padding:10,borderRadius:8,border:"1px solid #e0dcd6",marginBottom:12,fontSize:12}}>
-            <div style={{display:"flex",gap:16,flexWrap:"wrap",fontWeight:600}}>
-              <span>📦 Stock: {cur.stock}</span>
-              <span style={{color:"#1565c0"}}>📥 Ingresos: +{totalIngreso}</span>
-              <span style={{color:"#c0392b"}}>📤 Entregadas: -{totalDel}</span>
-              <span style={{color: (cur.stock+totalIngreso-totalDel)>=0?"#2e7d32":"#c0392b"}}>🧮 Disponibles: {cur.stock + totalIngreso - totalDel}</span>
-            </div>
+          {cur.ingresos&&cur.ingresos.length>0?(
+            <div className="tw" style={{marginBottom:8}}><table className="tb"><thead><tr><th>Cant.</th>{hasSizes&&<th>Tamaño</th>}<th>Nota</th><th>Registró</th><th>Hora</th><th></th></tr></thead><tbody>{cur.ingresos.map((ing,i)=>(<tr key={i}><td style={{fontWeight:700,color:"#1565c0"}}>{ing.qty}</td>{hasSizes&&<td style={{fontSize:11}}>{ing.size==="1.5"?"1½P":ing.size==="2"?"2P":"—"}</td>}<td style={{fontSize:11}}>{ing.note||"—"}</td><td style={{fontSize:11}}>{ing.registeredBy||"—"}</td><td style={{fontSize:11}}>{ing.time}</td><td><button className="ab" onClick={()=>rmIngreso(i)}>🗑️</button></td></tr>))}</tbody></table></div>
+          ):(<p style={{fontSize:12,color:"#999",marginBottom:4}}>Sin ingresos aún</p>)}
+          <div style={{fontSize:12,fontWeight:600,color:"#1565c0"}}>Total ingresos: {totalIng}</div>
+        </div>
+
+        {/* ENTREGAS */}
+        <h4 style={{fontSize:13,fontWeight:700,marginBottom:8}}>📦 Entregas — {invLabel}</h4>
+        <div style={{display:"flex",gap:8,marginBottom:10,flexWrap:"wrap",alignItems:"flex-end"}}>
+          <div className="fld" style={{width:110}}><label>Hab.</label><select value={newDel.roomId} onChange={e=>setNewDel(p=>({...p,roomId:e.target.value}))}><option value="">—</option>{rooms.slice().sort((a,b)=>a.name.localeCompare(b.name,undefined,{numeric:true})).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select></div>
+          <div className="fld" style={{width:70}}><label>Cant.</label><input type="number" min={1} value={newDel.qty} onChange={e=>setNewDel(p=>({...p,qty:e.target.value}))}/></div>
+          {hasSizes&&<div className="fld" style={{width:100}}><label>Tamaño</label><select value={newDel.size} onChange={e=>setNewDel(p=>({...p,size:e.target.value}))}><option value="">—</option><option value="1.5">1½ Plaza</option><option value="2">2 Plazas</option></select></div>}
+          <div className="fld" style={{width:110}}><label>Registra</label><input value={newDel.registeredBy} onChange={e=>setNewDel(p=>({...p,registeredBy:e.target.value}))} placeholder="¿Quién?"/></div>
+          <button className="ba bsm" onClick={addDelivery}>+</button>
+        </div>
+        {cur.deliveries.length>0&&(<div className="tw" style={{marginBottom:12}}><table className="tb"><thead><tr><th>Hab.</th><th>Cant.</th>{hasSizes&&<th>Tamaño</th>}<th>Registró</th><th>Hora</th><th></th></tr></thead><tbody>{cur.deliveries.map((d,i)=>(<tr key={i}><td className="trm">{d.roomId}</td><td>{d.qty}</td>{hasSizes&&<td style={{fontSize:11}}>{d.size==="1.5"?"1½P":d.size==="2"?"2P":"—"}</td>}<td style={{fontSize:11}}>{d.registeredBy||"—"}</td><td style={{fontSize:11}}>{d.time}</td><td><button className="ab" onClick={()=>rmDelivery(i)}>🗑️</button></td></tr>))}</tbody></table></div>)}
+        {cur.deliveries.length===0&&<p style={{fontSize:12,color:"#999",marginBottom:12}}>Sin entregas aún</p>}
+
+        {/* RESUMEN */}
+        <div style={{background:"#f9f7f4",padding:10,borderRadius:8,border:"1px solid #e0dcd6",marginBottom:12,fontSize:12}}>
+          <div style={{display:"flex",gap:16,flexWrap:"wrap",fontWeight:600}}>
+            <span>📦 Stock: {totalStock}</span>
+            <span style={{color:"#1565c0"}}>📥 Ingresos: +{totalIng}</span>
+            <span style={{color:"#c0392b"}}>📤 Entregadas: -{totalDel}</span>
+            <span style={{color: (totalStock+totalIng-totalDel)>=0?"#2e7d32":"#c0392b"}}>🧮 Disponibles: {totalStock + totalIng - totalDel}</span>
           </div>
-          <div style={{background:itemAlerts.length>0?"#fde8e5":"#e8f5e9",padding:12,borderRadius:8,border:"1px solid "+(itemAlerts.length>0?"#f5c6cb":"#a5d6a7")}}>
-            <h4 style={{fontSize:13,fontWeight:700,color:itemAlerts.length>0?"#c0392b":"#2e7d32",marginBottom:8}}>{itemAlerts.length>0?`⚠️ Faltan en ${itemAlerts.length} hab.`:`✅ ${invLabel} completas`}</h4>
-            {itemAlerts.map((a,i)=>(<div key={i} style={{display:"flex",gap:8,alignItems:"center",padding:"4px 0",flexWrap:"wrap",fontSize:12}}><strong style={{color:"#c0392b"}}>{a.roomName}</strong><span>{a.guest} ({a.reason})</span><span>Necesita: {a.persons} · Entregadas: {a.delivered}</span><span style={{color:"#c0392b",fontWeight:700}}>Faltan: {a.missing}</span></div>))}
-            {itemAlerts.length===0&&itemNeeds.length>0&&<div style={{fontSize:12,color:"#2e7d32"}}>{itemNeeds.map((n,i)=>(<div key={i}>✅ {n.roomName} — {n.guest} — {n.persons} ud.</div>))}</div>}
-            {itemNeeds.length===0&&<p style={{fontSize:12,color:"#888"}}>No hay hab. que requieran {activeInv} hoy</p>}
-          </div>
-        </>)}
+        </div>
+
+        {/* ALERTAS */}
+        <div style={{background:itemAlerts.length>0?"#fde8e5":"#e8f5e9",padding:12,borderRadius:8,border:"1px solid "+(itemAlerts.length>0?"#f5c6cb":"#a5d6a7")}}>
+          <h4 style={{fontSize:13,fontWeight:700,color:itemAlerts.length>0?"#c0392b":"#2e7d32",marginBottom:8}}>{itemAlerts.length>0?`⚠️ Faltan en ${itemAlerts.length} hab.`:`✅ ${invLabel} completas`}</h4>
+          {itemAlerts.map((a,i)=>(<div key={i} style={{display:"flex",gap:8,alignItems:"center",padding:"4px 0",flexWrap:"wrap",fontSize:12}}><strong style={{color:"#c0392b"}}>{a.roomName}</strong><span>{a.guest} ({a.reason})</span><span>Necesita: {a.persons} · Entregadas: {a.delivered}</span><span style={{color:"#c0392b",fontWeight:700}}>Faltan: {a.missing}</span></div>))}
+          {itemAlerts.length===0&&itemNeeds.length>0&&<div style={{fontSize:12,color:"#2e7d32"}}>{itemNeeds.map((n,i)=>(<div key={i}>✅ {n.roomName} — {n.guest} — {n.persons} ud.</div>))}</div>}
+          {itemNeeds.length===0&&<p style={{fontSize:12,color:"#888"}}>No hay hab. que requieran {activeInv} hoy</p>}
+        </div>
       </div>
-      {tAuthM&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.6)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:2000,padding:16}}><div style={{background:"#fff",padding:24,borderRadius:12,width:"100%",maxWidth:340}} onClick={e=>e.stopPropagation()}><h4 style={{fontSize:14,color:"#6B3410"}}>🔐 Validar Stock — {invLabel}</h4><p style={{fontSize:11,color:"#888",marginBottom:12}}>Ingresa tus credenciales</p><div className="fld"><label>Usuario</label><input value={tAuthU} onChange={e=>{setTAuthU(e.target.value);setTAuthE("");}} placeholder="usuario" autoComplete="off"/></div><div className="fld" style={{marginTop:8}}><label>Contraseña</label><input type="password" value={tAuthP} onChange={e=>{setTAuthP(e.target.value);setTAuthE("");}} placeholder="contraseña" onKeyDown={e=>e.key==="Enter"&&confirmTowelAuth()} autoComplete="off"/></div>{tAuthE&&<p style={{color:"#c0392b",fontSize:11,marginTop:6}}>{tAuthE}</p>}<div style={{display:"flex",gap:8,marginTop:14}}><button className="ba bsm" onClick={confirmTowelAuth}>Confirmar</button><button className="bc bsm" onClick={()=>setTAuthM(false)}>Cancelar</button></div></div></div>}
     </div>
   );
 });
+
 
 /* ============================================
    PgAvisos - Conflicts + Notes (con memo)
@@ -887,6 +993,7 @@ const PgAvisos = memo(function PgAvisos({ conflicts, rooms, types, setModal, set
     </div>
   );
 });
+
 
 
 
