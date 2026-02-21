@@ -24,8 +24,3 @@ module.exports = async function handler(req, res) {
 };
 
 
-5. Haz commit
-
-6. **En cron-job.org**, cambia la URL al nombre real del archivo. Si el archivo se llama `keep-alive.js`:
-
-   https://tinoco-hotel.vercel.app/api/keep-alive
