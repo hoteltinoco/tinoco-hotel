@@ -62,7 +62,9 @@ button{font-family:var(--F);cursor:pointer;border:none;transition:all .15s}
 .aty{background:#fdf2e4!important}.athol{background:var(--rb)!important}
 .avr{font-size:13px;font-weight:700;text-align:center;padding:4px 6px;background:#faf8f5}
 .avt{font-size:10px;color:var(--ts);text-align:center;padding:4px 4px;background:#faf8f5}
-.avc{text-align:center;padding:5px 3px;vertical-align:middle;cursor:default}
+.avc{text-align:center;padding:5px 3px;vertical-align:middle;cursor:default;transition:filter .15s,transform .15s}
+.avc-click{cursor:pointer}.avc-click:hover,.sph-click:hover{filter:brightness(.88);transform:scale(1.05)}
+.sph-click{cursor:pointer;transition:filter .15s,transform .15s}
 .cf{background:var(--gb)}.co{background:var(--rb)}.cr{background:var(--ob)}
 .cl{display:block;font-size:9px;font-weight:700;letter-spacing:.2px}
 .cf .cl{color:var(--gn)}.co .cl{color:var(--rd)}.cr .cl{color:var(--or)}
