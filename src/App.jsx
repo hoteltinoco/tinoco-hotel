@@ -210,10 +210,22 @@ const dbToType = (t) => ({ id: t.id, name: t.name, base: Number(t.base_price), h
 const dbToHol = (h) => ({ id: h.id, name: h.name, s: h.start_date, e: h.end_date, icon: h.icon || "🎉" });
 const dbToUser = (u) => ({ id: u.id, name: u.name, user: u.username, pass: u.password });
 function dbToRes(r) {
-  return { id: r.id, created: r.created_date, createdBy: r.created_by, lastModBy: r.last_mod_by || "", guest: r.guest, doc: r.doc, phone: r.phone, email: r.email || "", channel: r.channel || "Directo", roomType: r.room_type, roomId: r.room_id, persons: r.persons || 1, checkin: r.checkin, checkout: r.checkout, ciDate: r.ci_date, ciTime: r.ci_time || "13:00", coDate: r.co_date, coTime: r.co_time || "12:00", state: r.state || "Reservado", total: Number(r.total) || 0, advance: Number(r.advance) || 0, balance: Number(r.balance) || 0, payment: r.payment || "Efectivo", comments: r.comments || "", checkoutVerifiedBy: r.checkout_verified_by || "", checkoutVerifiedUser: r.checkout_verified_user || "", advances: typeof r.advances === "string" ? JSON.parse(r.advances || "[]") : (r.advances || []) };
+  const checkin = r.checkin || "";
+  const checkout = r.checkout || "";
+  /* Derivar ciDate/coDate siempre de forma consistente para evitar discrepancias */
+  let ciDate = r.ci_date || "";
+  let coDate = r.co_date || "";
+  if (!ciDate && checkin) { try { ciDate = toDS(checkin); } catch { ciDate = checkin.split("T")[0] || ""; } }
+  if (!coDate && checkout) { try { coDate = toDS(checkout); } catch { coDate = checkout.split("T")[0] || ""; } }
+  return { id: r.id, created: r.created_date, createdBy: r.created_by, lastModBy: r.last_mod_by || "", guest: r.guest, doc: r.doc, phone: r.phone, email: r.email || "", channel: r.channel || "Directo", roomType: r.room_type, roomId: r.room_id, persons: r.persons || 1, checkin: checkin, checkout: checkout, ciDate: ciDate, ciTime: r.ci_time || "13:00", coDate: coDate, coTime: r.co_time || "12:00", state: r.state || "Reservado", total: Number(r.total) || 0, advance: Number(r.advance) || 0, balance: Number(r.balance) || 0, payment: r.payment || "Efectivo", comments: r.comments || "", checkoutVerifiedBy: r.checkout_verified_by || "", checkoutVerifiedUser: r.checkout_verified_user || "", advances: typeof r.advances === "string" ? JSON.parse(r.advances || "[]") : (r.advances || []) };
 }
 function resToDb(r) {
-  return { id: r.id, created_date: r.created, created_by: r.createdBy, last_mod_by: r.lastModBy || "", guest: r.guest, doc: r.doc, phone: r.phone, email: r.email || "", channel: r.channel, room_type: r.roomType, room_id: r.roomId, persons: r.persons || 1, checkin: r.checkin, checkout: r.checkout, ci_date: r.ciDate, ci_time: r.ciTime || "13:00", co_date: r.coDate, co_time: r.coTime || "12:00", state: r.state, total: r.total, advance: r.advance, balance: r.balance, payment: r.payment, comments: r.comments || "", checkout_verified_by: r.checkoutVerifiedBy || "", checkout_verified_user: r.checkoutVerifiedUser || "", advances: JSON.stringify(r.advances || []) };
+  /* Asegurar que ci_date y co_date siempre estén definidos */
+  let ciDate = r.ciDate || "";
+  let coDate = r.coDate || "";
+  if (!ciDate && r.checkin) { try { ciDate = toDS(r.checkin); } catch { ciDate = r.checkin.split("T")[0] || ""; } }
+  if (!coDate && r.checkout) { try { coDate = toDS(r.checkout); } catch { coDate = r.checkout.split("T")[0] || ""; } }
+  return { id: r.id, created_date: r.created, created_by: r.createdBy, last_mod_by: r.lastModBy || "", guest: r.guest, doc: r.doc, phone: r.phone, email: r.email || "", channel: r.channel, room_type: r.roomType, room_id: r.roomId, persons: r.persons || 1, checkin: r.checkin, checkout: r.checkout, ci_date: ciDate, ci_time: r.ciTime || "13:00", co_date: coDate, co_time: r.coTime || "12:00", state: r.state, total: r.total, advance: r.advance, balance: r.balance, payment: r.payment, comments: r.comments || "", checkout_verified_by: r.checkoutVerifiedBy || "", checkout_verified_user: r.checkoutVerifiedUser || "", advances: JSON.stringify(r.advances || []) };
 }
 
 /* ============================================
@@ -448,13 +460,22 @@ const PgReg = memo(function PgReg({ res, resIndex, deleteReservation, rooms, typ
   const occCount = todayAvail.filter(a => !a.isFree).length;
 
   const fl = useMemo(() => res.filter((r) => {
-    const ci = r.ciDate || (r.checkin ? r.checkin.split("T")[0] : "");
-    const co = r.coDate || (r.checkout ? r.checkout.split("T")[0] : "");
+    /* Extraer fechas de forma robusta: usar toDS (misma lógica que Disponibilidad) como fuente primaria */
+    let ci = "";
+    let co = "";
+    try {
+      ci = r.ciDate || (r.checkin ? toDS(r.checkin) : "");
+      co = r.coDate || (r.checkout ? toDS(r.checkout) : "");
+    } catch {
+      ci = r.ciDate || (r.checkin ? r.checkin.split("T")[0] : "");
+      co = r.coDate || (r.checkout ? r.checkout.split("T")[0] : "");
+    }
     const mStart = statsYear + "-" + String(statsMonth + 1).padStart(2, "0") + "-01";
     const mEnd = statsYear + "-" + String(statsMonth + 1).padStart(2, "0") + "-" + String(new Date(statsYear, statsMonth + 1, 0).getDate()).padStart(2, "0");
-    const inMonth = (ci <= mEnd && co >= mStart);
+    /* Si no hay fechas válidas, incluir la reserva para que nunca se pierda */
+    const inMonth = (!ci || !co) ? true : (ci <= mEnd && co >= mStart);
     if (!inMonth) return false;
-    if (sf === "all" && (r.state === "Finalizado" || r.state === "Cancelado")) return false;
+    /* "Todos" muestra TODAS las reservas sin ocultar ningún estado */
     if (sf !== "all" && r.state !== sf) return false;
     if (q) { const s = q.toLowerCase(); return r.guest.toLowerCase().includes(s) || r.id.toLowerCase().includes(s) || r.doc.includes(s) || r.roomId.includes(s); }
     return true;
@@ -993,6 +1014,7 @@ const PgAvisos = memo(function PgAvisos({ conflicts, rooms, types, setModal, set
     </div>
   );
 });
+
 
 
 
