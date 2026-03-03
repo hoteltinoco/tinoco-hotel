@@ -212,11 +212,15 @@ const dbToUser = (u) => ({ id: u.id, name: u.name, user: u.username, pass: u.pas
 function dbToRes(r) {
   const checkin = r.checkin || "";
   const checkout = r.checkout || "";
-  /* Derivar ciDate/coDate siempre de forma consistente para evitar discrepancias */
-  let ciDate = r.ci_date || "";
-  let coDate = r.co_date || "";
-  if (!ciDate && checkin) { try { ciDate = toDS(checkin); } catch { ciDate = checkin.split("T")[0] || ""; } }
-  if (!coDate && checkout) { try { coDate = toDS(checkout); } catch { coDate = checkout.split("T")[0] || ""; } }
+  /* Derivar ciDate/coDate siempre de forma consistente — priorizar toDS(checkin/checkout) para evitar formatos sin padding */
+  let ciDate = "";
+  let coDate = "";
+  if (checkin) { try { ciDate = toDS(checkin); } catch { ciDate = r.ci_date || checkin.split("T")[0] || ""; } }
+  else if (r.ci_date) { try { ciDate = toDS(r.ci_date + "T12:00:00"); } catch { ciDate = r.ci_date; } }
+  if (checkout) { try { coDate = toDS(checkout); } catch { coDate = r.co_date || checkout.split("T")[0] || ""; } }
+  else if (r.co_date) { try { coDate = toDS(r.co_date + "T12:00:00"); } catch { coDate = r.co_date; } }
+  if (ciDate && ciDate.includes("NaN")) ciDate = r.ci_date || "";
+  if (coDate && coDate.includes("NaN")) coDate = r.co_date || "";
   return { id: r.id, created: r.created_date, createdBy: r.created_by, lastModBy: r.last_mod_by || "", guest: r.guest, doc: r.doc, phone: r.phone, email: r.email || "", channel: r.channel || "Directo", roomType: r.room_type, roomId: r.room_id, persons: r.persons || 1, checkin: checkin, checkout: checkout, ciDate: ciDate, ciTime: r.ci_time || "13:00", coDate: coDate, coTime: r.co_time || "12:00", state: r.state || "Reservado", total: Number(r.total) || 0, advance: Number(r.advance) || 0, balance: Number(r.balance) || 0, payment: r.payment || "Efectivo", comments: r.comments || "", checkoutVerifiedBy: r.checkout_verified_by || "", checkoutVerifiedUser: r.checkout_verified_user || "", advances: typeof r.advances === "string" ? JSON.parse(r.advances || "[]") : (r.advances || []) };
 }
 function resToDb(r) {
@@ -425,7 +429,7 @@ export default function App() {
       </header>
       <main className="cnt">
         {pg === "reg" && <PgReg res={res} resIndex={resIndex} deleteReservation={deleteReservation} rooms={rooms} types={types} setModal={setModal} curUser={curUser} />}
-        {pg === "disp" && <PgDisp rooms={rooms} types={types} res={res} resIndex={resIndex} hols={hols} calD={calD} setCalD={setCalD} />}
+        {pg === "disp" && <PgDisp rooms={rooms} types={types} res={res} resIndex={resIndex} hols={hols} calD={calD} setCalD={setCalD} setModal={setModal} setPg={setPg} />}
         {pg === "hab" && <PgHab rooms={rooms} updateRoom={updateRoom} deleteRoom={deleteRoom} types={types} addType={addType} updateType={updateType} deleteType={deleteType} sel={selR} setSel={setSelR} setModal={setModal} />}
         {pg === "lim" && <PgLim rooms={rooms} types={types} res={res} cln={clnOverrides} markCleaningDone={markCleaningDone} undoCleaningDone={undoCleaningDone} curUser={curUser} users={users} />}
         {pg === "avisos" && <PgAvisos conflicts={conflicts} rooms={rooms} types={types} setModal={setModal} setPg={setPg} curUser={curUser} />}
@@ -460,16 +464,20 @@ const PgReg = memo(function PgReg({ res, resIndex, deleteReservation, rooms, typ
   const occCount = todayAvail.filter(a => !a.isFree).length;
 
   const fl = useMemo(() => res.filter((r) => {
-    /* Extraer fechas de forma robusta: usar toDS (misma lógica que Disponibilidad) como fuente primaria */
+    /* Normalizar fechas siempre a través de toDS para comparación fiable */
     let ci = "";
     let co = "";
     try {
-      ci = r.ciDate || (r.checkin ? toDS(r.checkin) : "");
-      co = r.coDate || (r.checkout ? toDS(r.checkout) : "");
-    } catch {
-      ci = r.ciDate || (r.checkin ? r.checkin.split("T")[0] : "");
-      co = r.coDate || (r.checkout ? r.checkout.split("T")[0] : "");
-    }
+      if (r.checkin) ci = toDS(r.checkin);
+      else if (r.ciDate) ci = toDS(r.ciDate + "T12:00:00");
+    } catch { ci = ""; }
+    try {
+      if (r.checkout) co = toDS(r.checkout);
+      else if (r.coDate) co = toDS(r.coDate + "T12:00:00");
+    } catch { co = ""; }
+    /* Validar que sean fechas reales (no NaN) */
+    if (ci && ci.includes("NaN")) ci = "";
+    if (co && co.includes("NaN")) co = "";
     const mStart = statsYear + "-" + String(statsMonth + 1).padStart(2, "0") + "-01";
     const mEnd = statsYear + "-" + String(statsMonth + 1).padStart(2, "0") + "-" + String(new Date(statsYear, statsMonth + 1, 0).getDate()).padStart(2, "0");
     /* Si no hay fechas válidas, incluir la reserva para que nunca se pierda */
@@ -644,7 +652,7 @@ function MdlRes({ data, rooms, types, curUser, users, onSave, onClose }) {
 /* ============================================
    PgDisp - Disponibilidad (con memo + resIndex)
    ============================================ */
-const PgDisp = memo(function PgDisp({ rooms, types, res, resIndex, hols, calD, setCalD }) {
+const PgDisp = memo(function PgDisp({ rooms, types, res, resIndex, hols, calD, setCalD, setModal, setPg }) {
   const isMobile = useIsMobile();
   const bef = isMobile ? 2 : 3, aft = isMobile ? 2 : 4;
   const days = useMemo(() => { const r = []; for (let i = -bef; i <= aft; i++) r.push(addD(calD, i)); return r; }, [calD, bef, aft]);
@@ -674,9 +682,10 @@ const PgDisp = memo(function PgDisp({ rooms, types, res, resIndex, hols, calD, s
         </tr></thead><tbody>
           {filteredRooms.map(rm=>{const tp=types.find(t=>t.id===rm.type);return(<tr key={rm.id}><td className="avr">{rm.name}</td><td className="avt desk-only">{tp?.name}</td>
             {days.map(d=>{const{am,pm,ar,pr}=roomSt(rm.id,d,res,resIndex);const spl=am!==pm||(ar&&pr&&ar.id!==pr.id);
-              const mE=e=>{const rc=e.currentTarget.getBoundingClientRect();let tx="Hab. "+rm.name+" — "+d;if(spl){tx+="\nAM: "+sl(am)+(ar?" — "+ar.guest:"");tx+="\nPM: "+sl(pm)+(pr?" — "+pr.guest:"");}else{tx+="\n"+sl(am);if(ar)tx+="\n"+ar.guest+"\n"+fmtDT(ar.checkin)+" → "+fmtDT(ar.checkout);}sTt({x:rc.left+rc.width/2,y:rc.top-4,tx});};
-              if(spl)return(<td key={d} className="avsp" onMouseEnter={mE} onMouseLeave={()=>sTt(null)}><div className="spw"><div className={"sph "+sc(am)}><span className="cl">{sl(am)}</span>{ar&&<span className="cgs">{ar.guest.split(" ")[0]}</span>}</div><div className={"sph "+sc(pm)}><span className="cl">{sl(pm)}</span>{pr&&<span className="cgs">{pr.guest.split(" ")[0]}</span>}</div></div></td>);
-              return(<td key={d} className={"avc "+sc(am)} onMouseEnter={mE} onMouseLeave={()=>sTt(null)}><span className="cl">{sl(am)}</span>{ar&&<span className="cgs">{ar.guest.split(" ")[0]}</span>}</td>);
+              const mE=e=>{const rc=e.currentTarget.getBoundingClientRect();let tx="Hab. "+rm.name+" — "+d;if(spl){tx+="\nAM: "+sl(am)+(ar?" — "+ar.guest:"");tx+="\nPM: "+sl(pm)+(pr?" — "+pr.guest:"");if(ar||pr)tx+="\n🖱️ Clic para ver reserva";}else{tx+="\n"+sl(am);if(ar)tx+="\n"+ar.guest+"\n"+fmtDT(ar.checkin)+" → "+fmtDT(ar.checkout)+"\n🖱️ Clic para ver reserva";}sTt({x:rc.left+rc.width/2,y:rc.top-4,tx});};
+              const cellClick=(r)=>{if(r&&setModal){setModal({t:"res",d:r});}};
+              if(spl)return(<td key={d} className="avsp" onMouseEnter={mE} onMouseLeave={()=>sTt(null)}><div className="spw"><div className={"sph "+sc(am)+(ar?" sph-click":"")} onClick={()=>cellClick(ar)}><span className="cl">{sl(am)}</span>{ar&&<span className="cgs">{ar.guest.split(" ")[0]}</span>}</div><div className={"sph "+sc(pm)+(pr?" sph-click":"")} onClick={()=>cellClick(pr)}><span className="cl">{sl(pm)}</span>{pr&&<span className="cgs">{pr.guest.split(" ")[0]}</span>}</div></div></td>);
+              return(<td key={d} className={"avc "+sc(am)+(ar?" avc-click":"")} onClick={()=>cellClick(ar)} onMouseEnter={mE} onMouseLeave={()=>sTt(null)}><span className="cl">{sl(am)}</span>{ar&&<span className="cgs">{ar.guest.split(" ")[0]}</span>}</td>);
             })}
           </tr>);})}
         </tbody></table>
@@ -1014,6 +1023,7 @@ const PgAvisos = memo(function PgAvisos({ conflicts, rooms, types, setModal, set
     </div>
   );
 });
+
 
 
 
